@@ -1,0 +1,37 @@
+{
+  "name": "dduo-solo-founder",
+  "version": "0.2.0-beta.1",
+  "description": "Shared project memory and task context for Codex",
+  "author": {
+    "name": "dDuo Solo Founder contributors"
+  },
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "dduo-solo-founder": {
+      "command": "dduo-solo-founder-mcp-dispatch",
+      "env": {
+        "DDUO_SOLO_FOUNDER_CLIENT": "codex"
+      }
+    }
+  },
+  "interface": {
+    "displayName": "dDuo Solo Founder",
+    "shortDescription": "Shared project memory for Codex and Claude",
+    "longDescription": "Run isolated sleep-consolidated project memory, versioned planning, semantic retrieval, Epic and Task work management, activity, and encrypted recovery shared by Codex and Claude Code.",
+    "developerName": "dDuo Solo Founder contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Project memory with provenance",
+      "Plans, Epics, and Tasks",
+      "Local or VPS team workspace",
+      "Encrypted recovery",
+      "MCP"
+    ],
+    "brandColor": "#27C487",
+    "defaultPrompt": [
+      "Show what dDuo knows about this project and why",
+      "Turn my current priority into a Plan or Task",
+      "Open Work and summarize status, risks, and next actions"
+    ]
+  }
+}

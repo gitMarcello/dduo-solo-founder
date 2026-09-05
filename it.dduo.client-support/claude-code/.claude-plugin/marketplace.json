@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dduo-solo-founder",
+  "description": "Local project memory and task context shared by Claude Code and Codex.",
+  "owner": {"name": "dDuo Solo Founder contributors"},
+  "plugins": [
+    {
+      "name": "dduo-solo-founder",
+      "description": "Give each project isolated memory, tasks, objectives, activity, and encrypted recovery.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

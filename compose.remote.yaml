@@ -1,0 +1,10 @@
+services:
+  api:
+    environment:
+      DDUO_AUTH_REQUIRED: "true"
+      DDUO_DEPLOYMENT_MODE: remote
+      DDUO_AUTH_COOKIE_SECURE: "true"
+      DDUO_NODE_AUTHORITY_SECRET: ${DDUO_NODE_AUTHORITY_SECRET:?remote authority secret is required}
+  worker:
+    environment:
+      DDUO_DEPLOYMENT_MODE: remote

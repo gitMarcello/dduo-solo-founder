@@ -1,0 +1,80 @@
+[build-system]
+# These exact versions are also members of the locked runtime-build group.
+# Installers disable build isolation after materializing that group.
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dduo-solo-founder"
+version = "0.2.0b1"
+description = "Local project memory, planning, and task copilot for Codex and Claude Code"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "alembic>=1.13,<2",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "sqlalchemy[asyncio]>=2,<3",
+  "asyncpg>=0.29,<1",
+  "aiosqlite>=0.20,<1",
+  "pydantic-settings>=2.3,<3",
+  "qdrant-client>=1.14,<2",
+  "httpx>=0.27,<1",
+  "mcp>=2.1.1,<3",
+  "cryptography>=44,<46",
+  "openai>=1.75,<3",
+  "typer>=0.12,<1",
+  "tzdata==2026.3; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.24,<1",
+  "pytest-cov>=6,<8",
+  "ruff==0.15.21",
+  "skills-ref @ git+https://github.com/agentskills/agentskills.git@69ef37e9424c0a7ea9dd2293b559e43ec8176379#subdirectory=skills-ref",
+]
+local = ["fastembed>=0.8,<0.9"]
+benchmark = ["fastembed>=0.8,<0.9", "numpy>=1.26,<3", "psutil>=6,<8"]
+
+[dependency-groups]
+# The explicit installer materializes this group from uv.lock before building
+# the local project, then disables PEP 517 build isolation. No package is
+# resolved outside the locked distribution during installation.
+runtime-build = ["setuptools==80.9.0", "wheel==0.45.1"]
+
+[project.scripts]
+dduo-solo-founder = "dduo_solo_founder.launcher:app"
+dduo-solo-founder-mcp = "dduo_solo_founder.mcp_server:main"
+dduo-solo-founder-bridge = "dduo_solo_founder.cli_bridge:main"
+dduo-solo-founder-agent = "dduo_solo_founder.cli_bridge:main"
+dduo-solo-founder-claude-statusline = "dduo_solo_founder.claude_statusline:main"
+dduo-solo-founder-claude-statusline-restore = "dduo_solo_founder.claude_statusline:restore_main"
+dduo-solo-founder-hook-session-start = "dduo_solo_founder.hooks:session_start"
+dduo-solo-founder-hook-prompt = "dduo_solo_founder.hooks:user_prompt_submit"
+dduo-solo-founder-hook-stop = "dduo_solo_founder.hooks:stop"
+dduo-solo-founder-hook-dispatch = "dduo_solo_founder.client_dispatch:hook_dispatch_main"
+dduo-solo-founder-mcp-dispatch = "dduo_solo_founder.client_dispatch:mcp_dispatch_main"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--cov=dduo_solo_founder --cov-branch --cov-report=term-missing --cov-fail-under=95"
+markers = [
+  "distribution: installer tests that execute platform-specific command shims",
+  "onboarding: clean-machine remote onboarding smoke",
+]
+
+[tool.coverage.run]
+concurrency = ["greenlet", "thread"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

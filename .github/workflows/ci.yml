@@ -1,0 +1,324 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python:
+    name: Python (${{ matrix.os }}, ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+            distribution: true
+          - os: ubuntu-latest
+            python: "3.12"
+            distribution: true
+          - os: macos-14
+            python: "3.12"
+            distribution: true
+          - os: windows-latest
+            python: "3.12"
+            distribution: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - name: Install Python dependencies
+        run: python -m pip install uv==0.11.28 -e ".[dev]"
+      - name: Lint
+        run: ruff check backend tests benchmarks scripts migrations
+      - name: Test checksum manifest and native command contracts
+        run: node --test tests/checksum-manifest.test.mjs tests/native-command.test.mjs tests/copy-plugin-files.test.mjs
+      - name: Test with installer simulation
+        if: matrix.distribution
+        run: pytest -q -m "not onboarding"
+      - name: Clean Codex and Claude remote onboarding smoke
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: pytest -q --no-cov -m onboarding
+      # The legacy distribution harness exercises POSIX shell fixtures. Native
+      # Windows has its own executable transaction smoke plus the shared MCP,
+      # lifecycle and project isolation suites; Linux systemd is tested on Linux.
+      - name: Test native Windows runtime and client contracts
+        if: matrix.distribution == false
+        run: >-
+          pytest -q --no-cov
+          tests/test_authority_receipts.py
+          tests/test_backup_config.py
+          tests/test_bridge_auth.py
+          tests/test_client_binding.py
+          tests/test_client_http.py
+          tests/test_client_readiness.py
+          tests/test_client_telemetry.py
+          tests/test_context_budget.py
+          tests/test_invitations.py
+          tests/test_manual_cache.py
+          tests/test_pricing.py
+          tests/test_project_config.py
+          tests/test_schemas.py
+          tests/test_native_installer.py
+          tests/test_native_hook_runner.py
+          tests/test_native_process.py
+          tests/test_client_dispatch.py
+          tests/test_hook_lifecycle.py
+          tests/test_mcp_server.py
+          tests/test_runtime.py
+          tests/test_runtime_settings.py
+          tests/test_headless_setup.py
+          tests/test_project_activation.py
+          tests/test_backup_service.py::test_postgres_commands_use_environment_and_report_errors
+          tests/test_claude_statusline.py::test_windows_launcher_encoding_handles_spaces_and_shell_metacharacters
+          tests/test_cli_bridge.py::test_backup_supplement_is_project_scoped_bounded_and_authenticated
+      - name: Cross-platform installer dry run
+        run: node bin/install.mjs --dry-run --yes
+      - name: Native locked installer, update, rollback, MCP and hooks
+        run: python scripts/native_installer_smoke.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install, test, and build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm test
+          npm run build
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install runtime and browser test dependencies
+        run: |
+          python -m pip install uv
+          uv sync --extra dev
+          cd frontend
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Test local Setup and dashboard in Chromium
+        working-directory: frontend
+        run: |
+          npm run test:browser:types
+          npm run test:browser
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate Compose
+        run: docker compose config >/dev/null
+      - name: Build production images
+        run: docker compose build api worker web
+      - name: Exercise two-stack authority handoff
+        run: |
+          docker build -t dduo-authority-smoke-api -f docker/api.Dockerfile .
+          python3 scripts/e2e_authority_transfer.py
+      - name: Smoke test migrations and health
+        run: |
+          mkdir -p .ci-backups .ci-project
+          printf '%s\n' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' > .ci-backup.key
+          printf '%s\n' 'version = 1' 'id = "ci-project"' 'name = "CI Project"' 'api_port = 8765' 'web_port = 4173' > .ci-project/project.toml
+          bridge_port=18788
+          export DDUO_CLI_BRIDGE_TOKEN=ci-backup-bridge-token
+          export DDUO_CLI_BRIDGE_URL="http://host.docker.internal:${bridge_port}"
+          python3 scripts/ci_backup_bridge.py \
+            --port "$bridge_port" \
+            --project-id ci-project \
+            --token "$DDUO_CLI_BRIDGE_TOKEN" &
+          bridge_pid=$!
+          trap 'kill "$bridge_pid" >/dev/null 2>&1 || true' EXIT
+          export DDUO_SOLO_FOUNDER_PROJECT_ID=ci-project
+          export DDUO_SOLO_FOUNDER_BACKUP_CONFIGURED=true
+          export DDUO_SOLO_FOUNDER_BACKUP_SOURCE="$PWD/.ci-backups"
+          export DDUO_SOLO_FOUNDER_BACKUP_KEY_SOURCE="$PWD/.ci-backup.key"
+          export DDUO_SOLO_FOUNDER_PROJECT_CONFIG_SOURCE="$PWD/.ci-project/project.toml"
+          export DDUO_SOLO_FOUNDER_BACKUP_INCLUDE_QDRANT=false
+          docker compose up -d postgres qdrant api
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:8765/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl --fail http://127.0.0.1:8765/health
+          docker compose exec -T api alembic current | grep '(head)'
+          curl --fail --json '{"id":"ci-project","name":"CI Project","root_path":"/ci"}' http://127.0.0.1:8765/projects
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U dduo_solo_founder -d dduo_solo_founder <<'SQL'
+          INSERT INTO backup_records (
+            id, project_id, trigger, status, archive_name, size_bytes, includes_qdrant,
+            retained, source_generation, manifest, error, created_at, completed_at, verified_at
+          )
+          VALUES (
+            '00000000-0000-4000-8000-000000000048', 'ci-project', 'manual', 'verified',
+            'ci-seed-history.dduobackup', 48, false, false, 0, '{"ci_seed":true}'::json,
+            NULL, '2026-08-30T00:00:00Z', '2026-08-30T00:01:00Z', '2026-08-30T00:01:00Z'
+          );
+          SQL
+          docker compose exec -T api python - <<'PY'
+          from qdrant_client import models
+
+          from dduo_solo_founder.embeddings import embedding_service
+
+          service = embedding_service()
+          project_id = "ci-task-projection-smoke"
+          task_id = "99999999-9999-4999-8999-999999999999"
+          collection = service.ensure_task_collection(project_id)
+          assert service.task_integrity_snapshot(project_id) is None
+          service.write_task_marker(project_id, "ci-epoch", 0)
+          assert service.task_integrity_snapshot(project_id) == ("ci-epoch", 0)
+          service.qdrant.upsert(
+              collection_name=collection,
+              points=[
+                  models.PointStruct(
+                      id=task_id,
+                      vector=[1.0] + [0.0] * (service.dimension - 1),
+                      payload={
+                          "record_type": "task",
+                          "task_id": task_id,
+                          "project_id": project_id,
+                          "status": "todo",
+                      },
+                  )
+              ],
+              wait=True,
+          )
+          assert service.task_integrity_snapshot(project_id) == ("ci-epoch", 1)
+          assert list(service.task_inventory(project_id)) == [task_id]
+          service.update_task_payload(project_id, task_id, {"status": "done"})
+          assert service.task_point(project_id, task_id)["status"] == "done"
+          service.delete_task_points(project_id, [task_id])
+          assert service.task_integrity_snapshot(project_id) == ("ci-epoch", 0)
+          service.reset_task_collection(project_id)
+          assert service.task_marker_epoch(project_id) is None
+          PY
+          curl --fail -X POST \
+            --output .ci-backup-response.json \
+            http://127.0.0.1:8765/projects/ci-project/backups
+          python3 - <<'PY'
+          import json
+
+          response = json.load(open(".ci-backup-response.json", encoding="utf-8"))
+          assert response["status"] == "verified"
+          assert response["manifest"]["warnings"] == []
+          assert response["manifest"]["history"]["included"] is True
+          PY
+          test "$(find .ci-backups -name '*.dduobackup' -type f | wc -l)" -eq 1
+          docker compose exec -T api python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+
+          from dduo_solo_founder.backup import verify_archive
+
+          archives = list(Path("/backups").glob("*.dduobackup"))
+          assert len(archives) == 1
+          recovery_key = Path("/run/secrets/dduo-backup-key").read_text().strip()
+          with tempfile.TemporaryDirectory(prefix="dduo-ci-backup-") as directory:
+              extracted = Path(directory)
+              verification = verify_archive(archives[0], recovery_key, extract_to=extracted)
+              history = json.loads(
+                  (extracted / "history/backup-records.json").read_text(encoding="utf-8")
+              )
+          assert verification.manifest["history"]["included"] is True
+          assert len(history) == 1
+          assert history[0]["id"] == "00000000-0000-4000-8000-000000000048"
+          assert history[0]["project_id"] == "ci-project"
+          assert history[0]["status"] == "verified"
+          assert history[0]["manifest"] == {"ci_seed": True}
+          PY
+      - name: Migrate alpha data and legacy Plan links without loss
+        run: |
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U dduo_solo_founder -d postgres <<'SQL'
+          CREATE DATABASE dduo_alpha_snapshot;
+          SQL
+          docker compose run --rm -e DATABASE_URL=postgresql+asyncpg://dduo_solo_founder:dduo_solo_founder@postgres:5432/dduo_alpha_snapshot api alembic upgrade 4f9d45f8796c
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U dduo_solo_founder -d dduo_alpha_snapshot <<'SQL'
+          INSERT INTO projects (id, name, root_path, cause, principles, objectives, context, profile_version, backup_dirty, backup_generation, last_backed_up_generation, created_at, updated_at)
+          VALUES ('11111111-1111-1111-1111-111111111111', 'Alpha project', '/alpha', 'Keep history', '[]', '[]', '', 1, true, 1, 0, now(), now());
+          INSERT INTO memories (id, project_id, node_type, node_key, text, status, revision, supersedes_id, source_turn_ids, metadata, created_at, updated_at)
+          VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'heuristic', 'alpha-rule', 'Never lose this memory', 'active', 1, NULL, '[]', '{}', now(), now());
+          INSERT INTO outbox_events (id, project_id, event_type, aggregate_id, payload, status, attempts, last_error, created_at, next_attempt_at, processed_at)
+          VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', 'memory.upsert', '22222222-2222-2222-2222-222222222222', '{"text":"Never lose this memory"}', 'pending', 0, NULL, now(), now(), NULL);
+          SQL
+          docker compose run --rm -e DATABASE_URL=postgresql+asyncpg://dduo_solo_founder:dduo_solo_founder@postgres:5432/dduo_alpha_snapshot api alembic upgrade 7a31c4e9d5b2
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U dduo_solo_founder -d dduo_alpha_snapshot <<'SQL'
+          INSERT INTO tasks (id, project_id, title, description, status, priority, labels, dependencies, version, created_at, updated_at)
+          VALUES
+            ('55555555-5555-5555-5555-555555555551', '11111111-1111-1111-1111-111111111111', 'First legacy link', '', 'todo', 'medium', '[]', '[]', 1, now(), now()),
+            ('55555555-5555-5555-5555-555555555552', '11111111-1111-1111-1111-111111111111', 'Second legacy link', '', 'todo', 'medium', '[]', '[]', 1, now(), now());
+          INSERT INTO plans (id, project_id, title, objective, content, status, labels, version, created_at, updated_at)
+          VALUES ('66666666-6666-6666-6666-666666666666', '11111111-1111-1111-1111-111111111111', 'Legacy ordered plan', '', '', 'draft', '[]', 1, now(), now());
+          INSERT INTO plan_work_items (plan_id, task_id, created_at)
+          VALUES
+            ('66666666-6666-6666-6666-666666666666', '55555555-5555-5555-5555-555555555552', TIMESTAMPTZ '2026-08-25 12:00:00+00'),
+            ('66666666-6666-6666-6666-666666666666', '55555555-5555-5555-5555-555555555551', TIMESTAMPTZ '2026-08-25 12:00:00+00');
+          INSERT INTO observability_events (id, project_id, idempotency_key, category, operation, scope, status, attempt, measurement_source, input_tokens, characters, utf8_bytes, request_count, details, occurred_at, created_at)
+          VALUES ('77777777-7777-7777-7777-777777777777', '11111111-1111-1111-1111-111111111111', 'context:legacy-without-payload', 'context', 'context.session_start', 'automatic', 'success', 1, 'local_estimate', 1, 4, 4, 1, '{"component_overhead":4}', TIMESTAMPTZ '2026-08-25 12:00:00+00', TIMESTAMPTZ '2026-08-25 12:00:00+00');
+          SQL
+          docker compose run --rm -e DATABASE_URL=postgresql+asyncpg://dduo_solo_founder:dduo_solo_founder@postgres:5432/dduo_alpha_snapshot api alembic upgrade head
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U dduo_solo_founder -d dduo_alpha_snapshot <<'SQL'
+          INSERT INTO observability_events (id, project_id, idempotency_key, category, operation, scope, status, attempt, measurement_source, input_tokens, characters, utf8_bytes, request_count, details, occurred_at, created_at)
+          VALUES ('88888888-8888-8888-8888-888888888888', '11111111-1111-1111-1111-111111111111', 'context:unicode-snapshot', 'context', 'context.session_start', 'automatic', 'success', 1, 'local_estimate', 12, 42, 47, 1, '{"component_profile":47}', TIMESTAMPTZ '2026-08-25 12:34:56+00', TIMESTAMPTZ '2026-08-25 12:34:56+00');
+          INSERT INTO context_event_payloads (observability_event_id, content, content_sha256, producer_version, render_version, estimator_version, captured_at, components, tool_name, created_at)
+          VALUES ('88888888-8888-8888-8888-888888888888', 'Contesto esatto: caffè, qualità e lancio 🚀', 'c0e677f3217a7096f7745c1fc789cf881babc5a4b30f83d8f02aec3e08800177', 'ci', 'ci-render-v1', 'utf8_bytes_div_4_v1', TIMESTAMPTZ '2026-08-25 12:34:56+00', '[{"name":"profile","utf8_bytes":47,"estimated_tokens":12,"item_count":1,"references":[]}]', NULL, TIMESTAMPTZ '2026-08-25 12:34:56+00');
+          SQL
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT count(*) FROM memories WHERE id = '22222222-2222-2222-2222-222222222222' AND memory_group_id = id;")" = "1"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT count(*) FROM outbox_events WHERE id = '33333333-3333-3333-3333-333333333333';")" = "1"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT string_agg(task_id || ':' || position::text, ',' ORDER BY position) FROM plan_work_items WHERE plan_id = '66666666-6666-6666-6666-666666666666';")" = "55555555-5555-5555-5555-555555555551:0,55555555-5555-5555-5555-555555555552:1"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT is_nullable FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'plan_work_items' AND column_name = 'position';")" = "NO"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT string_agg(conname || ':' || contype::text, ',' ORDER BY conname) FROM pg_constraint WHERE conrelid = 'plan_work_items'::regclass AND conname IN ('ck_plan_work_items_position_nonnegative', 'uq_plan_work_items_plan_position');")" = "ck_plan_work_items_position_nonnegative:c,uq_plan_work_items_plan_position:u"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT count(*) FROM context_event_payloads WHERE observability_event_id = '77777777-7777-7777-7777-777777777777';")" = "0"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT count(*) FROM context_event_payloads WHERE observability_event_id = '88888888-8888-8888-8888-888888888888' AND content = 'Contesto esatto: caffè, qualità e lancio 🚀' AND octet_length(content) = 47 AND content_sha256 = 'c0e677f3217a7096f7745c1fc789cf881babc5a4b30f83d8f02aec3e08800177';")" = "1"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'context_event_payloads' AND column_name = 'content';")" = "text"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT task_index_reconciled::text || ':' || task_index_generation::text || ':' || coalesce(task_index_epoch, 'null') FROM projects WHERE id = '11111111-1111-1111-1111-111111111111';")" = "false:0:null"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT delivery_priority FROM outbox_events WHERE id = '33333333-3333-3333-3333-333333333333';")" = "0"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT indexdef LIKE '%(delivery_priority, next_attempt_at, created_at)%' AND indexdef LIKE '%WHERE%' AND indexdef LIKE '%pending%' AND indexdef LIKE '%failed%' FROM pg_indexes WHERE indexname = 'ix_outbox_events_ready';")" = "t"
+          test "$(docker compose exec -T postgres psql -At -U dduo_solo_founder -d dduo_alpha_snapshot -c "SELECT substr('abcdefghij', length('abcdefghij') - 3 + 1, 3);")" = "hij"
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
+
+  gate:
+    name: CI gate
+    if: ${{ always() }}
+    needs:
+      - python
+      - frontend
+      - browser
+      - compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI job to pass
+        env:
+          PYTHON_RESULT: ${{ needs.python.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          COMPOSE_RESULT: ${{ needs.compose.result }}
+        run: |
+          test "$PYTHON_RESULT" = "success"
+          test "$FRONTEND_RESULT" = "success"
+          test "$BROWSER_RESULT" = "success"
+          test "$COMPOSE_RESULT" = "success"

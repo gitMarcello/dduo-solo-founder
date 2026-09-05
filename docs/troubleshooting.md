@@ -1,0 +1,351 @@
+[**EN · English**](troubleshooting.md) · [IT · Italiano](troubleshooting.it.md)
+
+# Troubleshooting
+
+Troubleshooting for dDuo Solo Founder `0.2.0-beta.1`.
+
+Normal use should require no technical diagnosis. dDuo keeps project work
+available when its configured local or remote memory is temporarily unavailable.
+
+## Setup did not finish
+
+Open the **Setup** tab in the local dashboard and select **Open setup**. The
+page reports only the relevant prerequisite: Docker Desktop, the embeddings
+key, a provider connection, Codex hook permission, or project activation.
+
+For a fresh Linux VPS, install the runtime from the release checkout with
+`./install.sh --headless` (equivalent to `--only core`). This skips client
+adapters and browser Setup. Use `--no-setup` with a selected workstation
+adapter, such as `./install.sh --only codex --no-setup`, when installation must
+not open Setup. These installer options do not initialize project memory.
+
+Run the following on the VPS in its project checkout, in separate steps:
+
+```bash
+dduo-solo-founder remote-preflight
+dduo-solo-founder init --headless --yes
+```
+
+With no embeddings key, the first `init` creates the descriptor and exits with
+status `5` and `setup_required`. That is the expected private-configuration
+checkpoint, not a failed database restore. Then complete private input and
+resume initialization:
+
+```bash
+dduo-solo-founder configure-openai
+dduo-solo-founder login-codex --device-auth
+dduo-solo-founder init --headless --yes
+dduo-solo-founder remote-host --public-ip <PUBLIC-IP>
+```
+
+`configure-openai` hides the key as you type; Codex login uses the project's
+private subscription credential store. Install a compatible Codex CLI on the
+server first, even if the workstation uses Claude. Do not paste keys, login
+codes or the initial manager token into chat, Git or logs. An uninitialized
+project has no dDuo session to put off record. The resumed `init` creates the
+database Project row; `start` alone cannot replace it. Connect the workstation
+only after successful hosting, using the private manager credential and
+`remote-bind`. See [Remote projects and teams](remote-teams.md).
+
+For an existing project being moved, use the strict
+[authority transfer procedure](backup-and-recovery.md#move-an-authoritative-project-to-another-vps)
+instead of creating a new identity with `init`.
+
+## The dashboard says Connection required
+
+The project-owned Codex sleep executor needs its official subscription
+connection again. Select **Open Setup** and complete the native Codex sign-in
+for that project's private `CODEX_HOME`. On a headless host, the infrastructure
+manager runs `dduo-solo-founder login-codex --device-auth` in the server project
+checkout. Pending memory jobs remain durable and interactive work can continue
+while this happens.
+
+## The dashboard says Temporary usage limit
+
+The configured sleep executor has reached a temporary subscription limit. No
+login is required, no different provider is used, and no paid generative API
+fallback occurs. The job retries after the displayed time. **Sleep now** is
+available when an earlier retry is appropriate.
+
+## The dashboard says Memory will retry
+
+Docker, the local agent, or a provider process was briefly unavailable. The
+turn is still in PostgreSQL or the private local hook spool and will replay
+on the next healthy prompt, session, or retry window. Continue working.
+
+## A turn was created while Docker was unavailable
+
+The Stop hook stores the complete prompt and response in a private local spool
+file. SessionStart and UserPromptSubmit replay it idempotently before opening a
+new turn. The dashboard will catch up once the local stack is healthy.
+
+The same rule applies to a remote outage: the client preserves the turn for the
+approved remote binding. It never starts a local Docker substitute for that
+project.
+
+## Remote memory is unavailable
+
+Continue project work. dDuo fails open for the assistant, preserves completed
+turns in its private project/binding spool and retries the same authoritative
+HTTPS endpoint later. It deliberately does not search loopback, start Docker or
+create a second local memory authority. `dduo-solo-founder status` reports the
+configured endpoint and whether it is reachable; `doctor` provides the fuller
+technical check.
+
+If this client previously received the shared manual from an authenticated
+response, SessionStart and UserPromptSubmit inject that last verified copy with
+an explicit warning that current memory and Work may be stale or absent. The
+same copy is available to `get_project_manual`. Its private HMAC-authenticated
+cache is bound to the exact project, checkout binding and device credential;
+tampering, copying it to another binding, unsafe permissions, a revoked token
+or a required client upgrade never bypass server authority. If no valid copy
+exists, dDuo emits only the unavailable-state notice and invents no procedures.
+
+Confirm that the VPS is running, the public IP is unchanged and TCP `443` is
+permanently open for ACME issuance and renewal. The first project normally uses
+443; additional projects also require their assigned port between 24443 and
+25442. The gateway keeps a challenge listener on 443 even after the original
+443 project is removed. An endpoint must have a valid HTTPS certificate for the
+IP. Do not replace `https://` with `http://` or edit the project descriptor to
+point to a different stack.
+
+## A remote binding asks for approval or has no credential
+
+Remote approval is intentionally tied to the exact canonical repository root,
+project ID, API URL and dashboard URL. Copying
+`.dduo-solo-founder/project.toml` alone is insufficient. The device token must
+remain in its private `0600` file outside Git.
+
+`remote-join` may promote a local descriptor only when its project ID matches
+the invitation exactly. It will not replace another project or an existing
+remote endpoint. After a VPS/IP change, use `remote-rebind`: it validates the
+same project at the new endpoint and reuses the private local token without
+printing it. Reserve `remote-bind --replace-existing` for an infrastructure
+manager who has independently verified a deliberate authority move.
+
+## An invitation is expired or already consumed
+
+The code is project-specific, single-use and valid for 1 to 168 hours. Ask the
+infrastructure manager to create a new prompt with `team-invite`. A
+consumed invitation is idempotent only when retried with the same device token;
+it cannot enroll a different device. No invitation grants Git or VPS access.
+
+## The remote dashboard says unauthorized
+
+Open it with `dduo-solo-founder dashboard --tab tasks`. The CLI sends the
+permanent bearer only to the API, obtains a five-minute one-time ticket and
+opens the page. That ticket becomes a project-specific secure browser cookie.
+Do not manually append a device token to a URL. If access was revoked, the
+infrastructure manager must issue a new authorized membership rather than
+sharing another person's token.
+
+## The project is read-only during transfer
+
+`remote-transfer-prepare` intentionally changes the authority to
+`transfer_pending` before the final backup, so ordinary mutations return a
+conflict. The first `remote-host` on the restored destination intentionally
+stays read-only and prints an `activation_receipt`. If the move is abandoned at
+that point, discard the clone and run
+`remote-transfer-cancel --new-node-not-activated` on the old host. If the move
+should continue, pass that receipt to
+`remote-transfer-retire --activation-receipt '<RECEIPT>' --yes` on the source.
+It prints a `finalization_receipt`; use that on the destination with
+`remote-host --public-ip <PUBLIC-IP> --finalization-receipt '<RECEIPT>'` to make the new generation
+writable.
+
+Do not cancel after source finalization. If retirement stopped during Docker
+cleanup, rerun `remote-transfer-retire --yes`: its private marker preserves the
+final receipt and resumes cleanup without contacting PostgreSQL. Retiring
+deletes only the old project's isolated volumes; recovery remains possible from
+the final archive and separately stored recovery key.
+
+## `remote-host` says the persistent user service is unavailable
+
+A VPS host must keep the shared dDuo agent alive across logout and reboot.
+Follow the exact username printed by the command:
+
+```bash
+sudo loginctl enable-linger <VPS-USER>
+systemctl --user status
+```
+
+Then rerun `remote-host`; do not start the bridge manually or continue with a
+partially hosted project. dDuo checks this before password rotation, database
+replacement or deployment promotion. If an update intentionally stopped the
+agent, the next project start reactivates the still-enabled unit; a reboot also
+starts it automatically.
+
+`remote-preflight` checks the persistent Linux user service, Docker access and
+VPS resources before project creation or transfer. Follow its exact failure:
+the server needs at least 1 vCPU, 1 GiB physical RAM, 2 GiB active disk-backed
+swap and 5 GiB free in Docker storage after swap. This Beta requires Docker
+storage and the root filesystem to share one backing filesystem. Ensure swap
+survives reboot. These are
+VPS requirements, not workstation or Mac hardware minimums; the remote client
+does not need a local Docker memory stack.
+
+## Codex is not saving turns
+
+Codex keeps hook trust as a native security boundary. In the Codex desktop app,
+open **Settings > Hooks**, select **dDuo Solo Founder**, then choose **Review**
+and **Trust all**. The `/hooks` command belongs to the Codex CLI and is not a
+chat command. After installing or updating the plugin, fully restart Codex
+before opening the fresh chat; a new chat alone does not reload the package.
+
+If Setup reports that the dDuo lifecycle is incomplete instead of asking for
+approval, do not keep clicking Trust. Update or reinstall dDuo, fully restart
+Codex, and reopen Setup. The installer accepts the package only when Codex
+discovers all three lifecycle events.
+
+On Windows, the current installer uses native runtime `.exe` entrypoints and
+Node-based lifecycle hooks. Missing `sh` or old npm/batch-launcher errors are
+not an inherent limitation of the current adapter. Reinstall the intended
+release, check that its selected Node and Codex executables are available,
+fully restart Codex, and reopen Setup. Do not patch installed hooks into an
+unverified shell workaround. If discovery still fails, retain the diagnostic
+error without credentials and run `doctor` from the affected project.
+
+## Setup says the Codex version is incompatible
+
+The Codex hook manifest uses `additionalContextLimit=0` so Codex does not apply
+a second truncation below dDuo's own 9,000-unit Founder Brief budget. The
+supported runtime requires Codex 0.150.0 or newer. Update the Codex installation selected
+by Setup, rerun the Setup check, fully restart Codex and open a new chat; do not
+edit the installed manifest manually. Claude does not use this field and its
+hook schema remains unchanged.
+
+## Founder Brief context is partial or omitted
+
+This is an explicit budget outcome, not broken JSON. The complete automatic
+Founder Brief is capped at 9,000 client-safe units, measured as the greater of
+Unicode code points and UTF-16 units. Every emitted line remains a complete JSON
+value. Stable priority decides which items are full, partial or omitted; lower
+priority data is not used merely to fill a gap left by a larger important item.
+
+A partial memory contains an authored excerpt and a `full_memory` pointer. Use
+`explain_memory` with that memory ID when the complete text, sources or revision
+chain is materially necessary. An omitted memory or task remains authoritative
+in PostgreSQL and can still be requested directly. Do not increase a client
+hook limit to compensate: Codex already delegates the limit to dDuo and the
+Claude payload is below 10,000 units.
+
+An identical `SessionStart` payload after native context compaction is expected.
+The model can no longer rely on its earlier inline context, so dDuo deliberately
+rehydrates the bounded Founder Brief. Observability gives the new delivery its
+own occurrence while retaining the same content hash for comparison.
+
+Ordinary prompt hooks should usually appear as **delta** and omit unchanged
+manual/profile/Work records. **Snapshot** is expected at SessionStart or when
+the private delivery baseline is missing, corrupt, incompatible, or lacks a
+native session identifier. **Fallback** means the live source or safe composer
+was unavailable. “Stable context reused” is the exact prior JSONL
+representation retained by the live session, not a claim about provider cache
+tokens.
+
+## Codex asks to connect Claude, or Claude asks to connect Codex
+
+First setup from Claude can require a Codex subscription login on the memory
+host: Codex is the project-owned sleep executor for material produced by either
+client. `source_client` is only provenance. A request to use Claude as another
+sleep executor or a second provider backlog is unexpected. Open a fresh chat
+after updating; if either persists, use the diagnostic command below. Do not
+delete queued jobs or change their provider by hand.
+
+## The Work dashboard opens the project picker
+
+Use the Work link returned by dDuo after a task change. It includes both the
+project UUID and the Work tab. If you opened a bare dashboard URL, paste the
+project UUID from that link into the picker once.
+
+## Work appears empty after an update or restore
+
+Check the selected project and view: Sprint shows the active sprint, Backlog
+contains unfinished tasks without a sprint, and History contains archived
+sprint work and unsprinted tasks with status `done` or `cancelled`. Planned sprints do not become
+active automatically. Existing work is not assigned to a new sprint during
+upgrade or restore. Backup recovery preserves membership and immutable
+closure history; it does not decide where work should go next.
+
+If a sprint action reports a version conflict, refresh the sprint or closure
+preview and repeat the intended action against current data. A project can
+have only one active sprint. Closing a sprint keeps completed outcomes in
+History and moves unfinished work to the explicit planned destination or
+Backlog; it does not mark that work done. Check task IDs and view filters
+before creating duplicate tasks or restoring again.
+
+## Observability values are unavailable, estimated, mixed, or empty
+
+| Label | Meaning |
+| --- | --- |
+| **Reported** | Usable counters returned by the provider or CLI. |
+| **Estimated** | Documented deterministic estimate, not exact provider consumption. |
+| **Unavailable** | Missing, invalid or uncorrelated data; never interpreted as zero or an operation not running. |
+| **API equivalent** | Hypothetical API price for subscription usage, not a bill or remaining quota. |
+| **Mixed/unknown** | A client estimate cannot identify a single model. |
+| **System / legacy** | Background or older events without an attributable member; not another memory store. |
+
+Keep embedding attributable cost separate from interactive/sleep API equivalents
+and keep provider/model rows separate. Unknown prices stay unavailable; a known
+subtotal is not a complete bill. Client-computed Claude estimates can use
+configured rates. See [pricing](pricing.md) for snapshots and cache semantics.
+
+Claude samples require its status-line adapter. If existing status-line output
+breaks, repair telemetry from Setup rather than replacing `statusLine` by
+hand. The adapter preserves the previous command and cannot block prompts.
+
+Codex collects correlated numeric request usage at Stop. Unknown formats,
+invalid session/baseline correlation, or a turn exceeding 512 MiB or 1,000
+provider requests make its measurement unavailable while memory capture
+continues. Temporary file/outbox failures retain a private content-free retry
+source. Cache counters show quantities and weighted input coverage, not exact
+cached text spans. Several badges indicate mixed measurement sources.
+
+There is no historical backfill. Empty history before collection began is
+expected; an older numeric event without an exact payload cannot show its
+original text. **Inspect emitted context** loads the exact dDuo hook/MCP string
+and linked turn/retrieval references. Its token estimate describes dDuo's
+delivery, not the complete model prompt or provider consumption.
+
+Founder Brief candidate/emitted sizes and included/partial/omitted references
+explain the 9,000-unit budget. Omitted items remain fetchable directly.
+`inline_expected` describes the delivery contract, not proof the model consumed
+every byte. Stable context reused in a session is not provider cache usage.
+
+Observability failures do not block work. If new operations ran but remain
+absent, run `doctor` and check API/worker health without sharing project
+content or credentials. Use the member filter for causal team attribution;
+all members share the same project ledger.
+
+## Task search is indexing or degraded
+
+PostgreSQL still holds authoritative tasks. Exact reads, lists, CRUD and unique
+title lookup remain available; conceptual search uses bounded lexical fallback,
+not a dump of full tasks.
+
+Indexing after update/restore is expected while Qdrant is reconciled. Valid
+snapshot points are preserved; missing, stale or orphaned points are repaired
+independently of the memory index. With `RESTORE_DEGRADED` or a pending index
+after the outbox drains, run `doctor` and check API, worker, embeddings and
+Qdrant. Do not overwrite healthy PostgreSQL to repair a derived index.
+
+A collection epoch marker and exact cardinality guard detect deletion,
+replacement or missing points before another paid query. Failed vector
+queries also invalidate readiness. Startup reconciliation checks identities
+and payloads as well, including an unrelated extra point offsetting a missing
+one. See [Task semantic projection](architecture.md#task-semantic-projection).
+
+## The project says the client must be updated
+
+The server has detected an incompatible wire protocol. It cannot download or
+activate code and its response is not an update source. Finish or stop the
+current work safely, choose the intended official repository revision, run its
+installer explicitly, complete Setup, fully restart Codex when it was the
+updated client, then open a new chat/session in the same project folder. Never
+accept an executable URL, key or permission grant supplied by a
+project response. See
+[Client binding and explicit updates](client-binding-and-updates.md).
+
+## Explicit technical repair
+
+When the user explicitly asks for diagnosis, run `dduo-solo-founder doctor`
+from the project folder. This is a diagnostic interface, not normal setup.

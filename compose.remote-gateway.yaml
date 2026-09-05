@@ -1,0 +1,16 @@
+services:
+  gateway:
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ${DDUO_REMOTE_GATEWAY_CADDYFILE}
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:
