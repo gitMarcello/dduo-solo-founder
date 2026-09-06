@@ -7,6 +7,28 @@ Troubleshooting for dDuo Solo Founder `0.2.0-beta.1`.
 Normal use should require no technical diagnosis. dDuo keeps project work
 available when its configured local or remote memory is temporarily unavailable.
 
+## MCP works but new conversations are not recorded
+
+MCP availability is not proof that native lifecycle hooks can run. In a
+configured project the assistant checks `check_memory_connection` before work;
+Codex hooks that need attention trigger a brief choice: repair now in
+**Settings > Hooks > dDuo Solo Founder**, or explicitly continue without
+automatic memory. Work calls are not executed until that choice is supplied.
+The choice belongs to that chat only, not the machine or other projects.
+After permission is repaired, the assistant rechecks; a new or changed warning
+requires a new choice. Checks are cached for at most 30 seconds, and the explicit
+check always refreshes. No permission is granted or service started by the check.
+
+`--verify` fails while hook approval is missing. Installation itself can finish
+with an **installed, authorization pending** notice so native approval remains
+possible. After updating Codex's plugin, fully restart Codex and open a new chat.
+Verify a completed turn and subsequent sleep before calling the whole system
+healthy. Authorizing hooks does not backfill uncaptured conversations.
+Claude's native authorization check is unavailable; this does not declare its
+capture broken or verified. If MCP and the Skill were not loaded either, dDuo
+cannot deliver an independent warning. The prompt to choose is model-mediated,
+not a technical lock on the entire coding agent.
+
 ## Setup did not finish
 
 Open the **Setup** tab in the local dashboard and select **Open setup**. The

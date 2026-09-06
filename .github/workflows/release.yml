@@ -140,7 +140,7 @@ jobs:
             '  printf '\''{"id":1,"result":{}}\n'\''' \
             '  IFS= read -r _initialized' \
             '  IFS= read -r _hooks_list' \
-            '  printf '\''{"id":2,"result":{"data":[{"cwd":"%s","hooks":[{"pluginId":"dduo-solo-founder@personal","eventName":"sessionStart","enabled":true,"trustStatus":"untrusted"},{"pluginId":"dduo-solo-founder@personal","eventName":"userPromptSubmit","enabled":true,"trustStatus":"untrusted"},{"pluginId":"dduo-solo-founder@personal","eventName":"stop","enabled":true,"trustStatus":"untrusted"}]}]}}\n'\'' "$DDUO_RELEASE_SMOKE_PROJECT_ROOT"' \
+            '  printf '\''{"id":2,"result":{"data":[{"cwd":"%s","hooks":[{"pluginId":"dduo-solo-founder@personal","eventName":"sessionStart","enabled":true,"trustStatus":"%s"},{"pluginId":"dduo-solo-founder@personal","eventName":"userPromptSubmit","enabled":true,"trustStatus":"%s"},{"pluginId":"dduo-solo-founder@personal","eventName":"stop","enabled":true,"trustStatus":"%s"}]}]}}\n'\'' "$DDUO_RELEASE_SMOKE_PROJECT_ROOT" "$DDUO_RELEASE_SMOKE_HOOK_TRUST" "$DDUO_RELEASE_SMOKE_HOOK_TRUST" "$DDUO_RELEASE_SMOKE_HOOK_TRUST"' \
             'fi' \
             > "${fake_bin}/codex"
           printf '%s\n' '#!/bin/sh' 'exit 0' > "${fake_bin}/browser"
@@ -155,9 +155,19 @@ jobs:
           export BROWSER="${fake_bin}/browser"
           export DDUO_SOLO_FOUNDER_CODEX_DESKTOP="${smoke_home}/missing-codex-desktop"
           export DDUO_RELEASE_SMOKE_PROJECT_ROOT="${project_root}"
+          export DDUO_RELEASE_SMOKE_HOOK_TRUST="untrusted"
           timeout 900 node \
             "${smoke_root}/${artifact_name}/bin/install.mjs" \
             --only codex --project-root "${project_root}" --yes
+          if node "${smoke_root}/${artifact_name}/bin/install.mjs" \
+            --verify --only codex --project-root "${project_root}" \
+            > "${smoke_root}/pending-verification.log" 2>&1; then
+            echo "Untrusted hooks incorrectly passed installation verification" >&2
+            exit 1
+          fi
+          grep -q 'FAIL  Codex lifecycle hook authorization' "${smoke_root}/pending-verification.log"
+          grep -q 'Settings > Hooks' "${smoke_root}/pending-verification.log"
+          export DDUO_RELEASE_SMOKE_HOOK_TRUST="trusted"
           node "${smoke_root}/${artifact_name}/bin/install.mjs" \
             --verify --only codex --project-root "${project_root}"
           "${fake_bin}/dduo-solo-founder" bridge-stop

@@ -104,6 +104,23 @@ as a fallback. No server credential belongs in the shared project context.
 
 ## First fresh chat
 
+For an already configured project, call `check_memory_connection` before
+project work in each chat, even when MCP tools are available. This independent
+check can detect disabled or untrusted Codex hooks when no automatic context
+arrives. If it returns `requires_choice`, briefly explain in the user's
+language that automatic recording is inactive or unverified, give the returned
+Settings action, and ask whether to fix it now or continue without automatic
+memory. Wait for the choice. After `fatto`, recheck; never approve hooks yourself.
+Only after the user explicitly chooses to continue, pass the returned
+`warning_id` as `memory_warning_ack` on subsequent dDuo calls in this chat.
+Keep the identifier invisible; do not ask again for the same accepted warning,
+reuse another chat's choice, or invent an acknowledgement. If a tool returns
+`tool_executed=false`, it did not perform the requested operation: after the
+choice, retry only if still wanted. Clear the acknowledgement on recovery.
+Native authorization is not proof that turns or sleep were processed. Claude's
+unavailable native verification does not mean capture failed; preserve its
+normal workflow. A plugin that was not loaded at all cannot deliver this notice.
+
 If the initial project profile is still missing, ask for one compact message
 covering why the project exists, its objectives, principles, current state and
 main work. Once real project context is available, and only if the user has

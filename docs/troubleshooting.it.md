@@ -7,6 +7,28 @@ Guida per dDuo Solo Founder `0.2.0-beta.1`. Nell'uso normale non dovrebbe
 servire una diagnosi tecnica: il lavoro del progetto resta disponibile anche
 quando la memoria locale o remota è temporaneamente irraggiungibile.
 
+## MCP funziona ma le nuove conversazioni non vengono registrate
+
+MCP collegato non significa hook autorizzati. Nei progetti configurati
+l'assistente chiama `check_memory_connection` prima di lavorare. Se gli hook
+Codex richiedono attenzione, propone una sola scelta: sistemarli in
+**Impostazioni > Hook > dDuo Solo Founder**, oppure continuare esplicitamente
+senza memoria automatica. Le operazioni Work richieste restano ineseguite fino
+alla scelta. La conferma vale nella conversazione, non per altri progetti o chat.
+Su «fatto» il controllo viene ripetuto; un problema diverso richiede una nuova
+scelta. La verifica esplicita è sempre fresca; le altre chiamate usano una cache
+di massimo 30 secondi. Il controllo non autorizza hook e non avvia servizi.
+
+`--verify` fallisce se manca l'autorizzazione. L'installazione può invece
+terminare con **installato, autorizzazione necessaria**, lasciando completare
+il consenso nativo. Dopo un aggiornamento del plugin Codex, riavvia completamente
+Codex e apri una nuova chat. Verifica un turno salvato e il successivo sonno prima
+di considerare tutto operativo. L'autorizzazione non recupera i turni mai catturati.
+Per Claude questa verifica nativa non è disponibile: non significa che la
+cattura sia guasta o verificata. Se anche MCP e Skill non vengono caricati,
+dDuo non può mostrare l'avviso. La domanda è gestita dall'assistente, non è un
+blocco tecnico dell'intero agente di sviluppo.
+
 <a id="setup-did-not-finish"></a>
 ## Setup non è terminato
 

@@ -30,6 +30,7 @@ from dduo_solo_founder.client_support import (
     require_supported_client,
 )
 from dduo_solo_founder.manual_cache import load_verified_manual, store_verified_manual
+from dduo_solo_founder.memory_connection import MemoryConnectionChecks
 from dduo_solo_founder.observability import ESTIMATOR_VERSION, estimated_tokens_for_text
 from dduo_solo_founder.operating_contract import HUMAN_WORK_RESPONSE_INSTRUCTION
 from dduo_solo_founder.launcher import get_setup_status as read_setup_status
@@ -66,6 +67,13 @@ MCP_CONTEXT_RENDER_VERSION = "mcp-result-v3"
 MCP_CLIENT_ENV = "DDUO_SOLO_FOUNDER_CLIENT"
 MCP_PROJECT_ROOT_ENV = "DDUO_SOLO_FOUNDER_PROJECT_ROOT"
 MCP_WORKSPACE_ARGUMENT = "workspace_root"
+MCP_WARNING_ACK_ARGUMENT = "memory_warning_ack"
+_MEMORY_CONNECTION_CHECKS = MemoryConnectionChecks()
+_CONNECTION_EXEMPT_TOOLS = {
+    "check_memory_connection", "check_setup", "open_setup", "decline_setup", "health",
+    # Privacy requests must never wait for a memory-health choice.
+    "set_off_record",
+}
 
 _ACTIVE_MCP_CLIENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "dduo_active_mcp_client",
@@ -261,6 +269,11 @@ TOOL_MODELS = {
     "check_setup": (
         "Verify local Setup or the configured remote memory binding; return only the next safe action",
         SetupCheckInput,
+    ),
+    "check_memory_connection": (
+        "Check local automatic-memory hook authorization before project work in each chat, "
+        "and recheck after the user fixes permission; does not start services or repair anything",
+        EmptyInput,
     ),
     "get_project_briefing": (
         "Refresh purpose, objectives, active work and onboarding status only when the automatic Founder Brief is absent, degraded, explicitly requested, or stale; otherwise this duplicates current context",
@@ -1487,6 +1500,14 @@ def _mcp_input_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Add the portable per-call root without changing the domain contracts."""
     schema = model.model_json_schema()
     properties = schema.setdefault("properties", {})
+    properties[MCP_WARNING_ACK_ARGUMENT] = {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$",
+        "description": (
+            "Current warning_id, only after the user explicitly chooses in THIS chat "
+            "to continue without verified automatic memory. Never invent or reuse another chat's choice."
+        ),
+    }
     properties[MCP_WORKSPACE_ARGUMENT] = {
         "type": "string",
         "description": (
@@ -1554,6 +1575,29 @@ def _invoke_mcp_tool(
     return value, rendered
 
 
+def _connection_notice(
+    name: str, runtime: MCPToolRuntime, acknowledgement: str | None
+) -> dict | None:
+    if name in _CONNECTION_EXEMPT_TOOLS and name != "check_memory_connection":
+        return None
+    if not runtime.project_id:
+        return (
+            {"ready": None, "reason": "unconfigured", "requires_choice": False,
+             "response_instruction": "Follow normal project activation; do not claim memory is active."}
+            if name == "check_memory_connection" else None
+        )
+    checked = _MEMORY_CONNECTION_CHECKS.check(
+        runtime.client, runtime.project_root,
+        runtime.binding.binding_id if runtime.binding else runtime.project_id,
+        refresh=name == "check_memory_connection",
+    )
+    if name == "check_memory_connection":
+        return checked
+    if checked["requires_choice"] and acknowledgement != checked.get("warning_id"):
+        return {**checked, "tool_executed": False}
+    return None
+
+
 async def _list_mcp_tools(
     context: ServerRequestContext[Any, Any],
     _params: mcp_types.PaginatedRequestParams | None,
@@ -1582,6 +1626,13 @@ async def _call_mcp_tool(
 
     raw_arguments: dict[str, Any] = dict(params.arguments or {})
     try:
+        acknowledgement = raw_arguments.pop(MCP_WARNING_ACK_ARGUMENT, None)
+        if acknowledgement is not None and (
+            not isinstance(acknowledgement, str)
+            or len(acknowledgement) != 32
+            or any(char not in "0123456789abcdef" for char in acknowledgement)
+        ):
+            raise ValueError("memory_warning_ack must be the current warning_id")
         runtime = _resolve_tool_runtime(client, raw_arguments)
         model = selected[1]
         validated = model.model_validate(raw_arguments)
@@ -1593,6 +1644,16 @@ async def _call_mcp_tool(
 
     provider_token = _ACTIVE_MCP_CLIENT.set(client)
     try:
+        notice = await anyio.to_thread.run_sync(
+            functools.partial(_connection_notice, params.name, runtime, acknowledgement)
+        )
+        if notice is not None:
+            # This is a local control response, not a delivered project payload.
+            # In particular no task mutation, API call or telemetry flush occurs.
+            return mcp_types.CallToolResult(
+                content=[mcp_types.TextContent(type="text", text=json.dumps(notice))],
+                structuredContent=notice,
+            )
         value, rendered = await anyio.to_thread.run_sync(
             functools.partial(_invoke_mcp_tool, params.name, arguments, runtime)
         )
@@ -1619,7 +1680,14 @@ def create_mcp_server() -> Server:
         description="Project-isolated memory and work context for Codex and Claude Code",
         instructions=(
             "Use dDuo only from Codex or Claude Code. Every tool call is bound to the "
-            "current project root and never falls back to another project."
+            "current project root and never falls back to another project. Before project "
+            "work in each chat call check_memory_connection once, even if MCP tools work. "
+            "If automatic memory needs attention, briefly explain in the user's language "
+            "and ask whether to fix it now or continue without automatic memory. Wait for "
+            "that choice; do not claim capture is active just because MCP is connected. "
+            "On 'done', recheck. After explicit consent to continue, use the returned "
+            "warning_id as memory_warning_ack on calls in this chat only; ask again only "
+            "for a changed warning. If the user declines dDuo for this project, do not activate it."
         ),
         on_list_tools=_list_mcp_tools,
         on_call_tool=_call_mcp_tool,

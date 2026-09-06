@@ -1,7 +1,5 @@
 # Changelog
 
-## Unreleased
-
 ## 0.2.0-beta.1 — Beta 1
 
 First distributed Beta for invited developers using Codex or Claude Code.
@@ -14,6 +12,10 @@ First distributed Beta for invited developers using Codex or Claude Code.
 - Readable Markdown, paginated Work and history, and a responsive dashboard.
 - Native macOS and Windows installation, updates and rollback, with shared
   Agent Plugins packaging and client-specific lifecycle adapters.
+- Independent MCP checks surface missing Codex hook authorization before Work
+  operations, with an explicit per-chat choice to continue without automatic
+  memory. Installation distinguishes files installed from hooks authorized;
+  permission checks do not claim end-to-end capture health.
 - Local Docker stacks or an authenticated Linux VPS, including first-time
   headless VPS setup, project-scoped invitations and authority transfer.
 - Recovery backups and verified upgrade snapshots that preserve project data.

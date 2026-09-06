@@ -137,7 +137,7 @@ def fixture_client(client: str, args: list[str]) -> None:
                 "cwd": request["params"]["cwds"][0],
                 "hooks": [{
                     "pluginId": "dduo-solo-founder@personal", "eventName": event,
-                    "enabled": True, "trustStatus": "untrusted",
+                    "enabled": True, "trustStatus": fixture_hook_trust(),
                 } for event in ("sessionStart", "userPromptSubmit", "stop")],
             }]}
             print(json.dumps({"id": request["id"], "result": result}), flush=True)
@@ -171,6 +171,11 @@ def fixture_client(client: str, args: list[str]) -> None:
             raise SystemExit(19)
 
 
+def fixture_hook_trust() -> str:
+    path = Path(os.environ["DDUO_SMOKE_STATE"]) / "codex-hook-trust"
+    return path.read_text(encoding="utf-8") if path.exists() else "untrusted"
+
+
 def fixture_runtime(name: str, args: list[str]) -> None:
     if name == "uv":
         if args[:3] == ["tool", "dir", "--bin"]:
@@ -183,10 +188,18 @@ def fixture_runtime(name: str, args: list[str]) -> None:
             for executable in EXECUTABLES:
                 write_cli(directory / executable, ["--runtime", executable], native=True)
     elif name == "dduo-solo-founder" and args[:1] == ["client-readiness"]:
+        trust = fixture_hook_trust()
+        ready = trust in {"trusted", "managed"}
+        reason = "authorized" if ready else (
+            "reauthorization_required" if trust == "modified" else "authorization_required"
+        )
         print(json.dumps({"hooks": {
-            "reason": "authorization_required", "hook_count": 3,
+            "ready": ready, "reason": reason, "hook_count": 3,
+            "trust_statuses": [trust],
             "events": ["sessionStart", "userPromptSubmit", "stop"],
         }}))
+        if not ready:
+            raise SystemExit(8)
     elif name == "dduo-solo-founder" and args[:1] == ["setup"]:
         raise SystemExit("The headless smoke must not open Setup")
     elif name == "dduo-solo-founder-hook-dispatch":
@@ -310,8 +323,22 @@ def smoke(source: Path, *, simulate_runtime: bool) -> None:
         # Even available clients must not be probed in core-only installation.
         assert not (state / "calls.jsonl").exists()
         adapters = ["--only", "codex", "--only", "claude", "--no-setup"]
-        run([*installer, "--yes", *adapters])
-        run([*installer, "--verify", *adapters])
+        installed = run([*installer, "--yes", *adapters])
+        assert "INSTALLED  components verified (Claude + Codex)" in installed.stdout
+        assert "PASS  installation verified" not in installed.stdout
+        assert "Settings > Hooks" in installed.stderr
+        for trust in ("untrusted", "modified"):
+            (state / "codex-hook-trust").write_text(trust, encoding="utf-8")
+            pending = run([*installer, "--verify", *adapters], success=False)
+            assert pending.returncode == 1
+            assert "FAIL  Codex lifecycle hook authorization" in pending.stdout
+            assert "PASS  installation verified" not in pending.stdout
+            assert "Settings > Hooks" in pending.stderr
+        # Synthetic native consent: only the disposable fixture's reported
+        # trust changes. The installer must never grant Codex permission.
+        (state / "codex-hook-trust").write_text("trusted", encoding="utf-8")
+        verified = run([*installer, "--verify", *adapters])
+        assert "PASS  installation verified (Codex + Claude)" in verified.stdout
         runtime = home / ".local/share/dduo-solo-founder/runtime"
         pointer = home / ".config/dduo-solo-founder/hook-runtime-bin"
         expected_pointer = pointer.read_bytes()
