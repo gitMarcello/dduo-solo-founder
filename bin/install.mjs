@@ -1057,8 +1057,9 @@ function claudePluginPackageReady() {
     && !existsSync(join(claudePlugin, ".codex-plugin"));
 }
 
-function codexHookDiscoveryReady() {
-  if (!has("dduo-solo-founder")) return false;
+function codexHookReadiness() {
+  const unavailable = { discovered: false, authorized: false, authorizationRequired: false };
+  if (!has("dduo-solo-founder")) return unavailable;
   const invocation = installerCommand("dduo-solo-founder", [
       "client-readiness",
       "--client",
@@ -1076,23 +1077,33 @@ function codexHookDiscoveryReady() {
       ...invocation.options,
     },
   );
+  // client-readiness uses exit 8 for protected actions that still need the
+  // user's consent. Other failures must never become a successful hook check.
+  if (result.error || ![0, 8].includes(result.status)) return unavailable;
   let payload;
   try {
     payload = JSON.parse(String(result.stdout || ""));
   } catch {
-    return false;
+    return unavailable;
   }
   const hooks = payload?.hooks;
   const events = new Set(Array.isArray(hooks?.events) ? hooks.events : []);
-  const acceptedReasons = new Set([
-    "authorized",
+  const pendingReasons = new Set([
     "authorization_required",
     "reauthorization_required",
   ]);
-  return acceptedReasons.has(hooks?.reason)
+  const authorized = hooks?.reason === "authorized" && hooks?.ready === true;
+  const authorizationRequired = pendingReasons.has(hooks?.reason) && hooks?.ready === false;
+  const discovered = (authorized || authorizationRequired)
     && hooks?.hook_count === expectedCodexHookEvents.size
     && events.size === expectedCodexHookEvents.size
     && [...expectedCodexHookEvents].every((event) => events.has(event));
+  return {
+    discovered,
+    authorized: discovered && authorized,
+    authorizationRequired: discovered && authorizationRequired,
+    reason: hooks?.reason,
+  };
 }
 
 function installCodex() {
@@ -2249,7 +2260,7 @@ function clientLabel(target) {
   return target === "claude" ? "Claude" : "Codex";
 }
 
-function verify(targets = verificationTargets()) {
+function verify(targets = verificationTargets(), { allowPendingCodexAuthorization = false } = {}) {
   const checks = [
     ["runtime", existsSync(runtime)],
     ["runtime pointer", existsSync(runtimePointer)],
@@ -2262,10 +2273,23 @@ function verify(targets = verificationTargets()) {
     checks.push(["Claude native plugin package", claudePluginPackageReady()]);
     checks.push(["Claude plugin", claudePluginHealthy()]);
   }
+  let codexHooks = null;
   if (targets.includes("codex")) {
+    codexHooks = codexHookReadiness();
     checks.push(["Codex native plugin package", codexPluginPackageReady()]);
     checks.push(["Codex lifecycle hooks feature", codexHooksEnabled()]);
-    checks.push(["Codex lifecycle hook discovery (3/3)", codexHookDiscoveryReady()]);
+    checks.push(["Codex lifecycle hook discovery (3/3)", codexHooks.discovered]);
+    if (codexHooks.discovered && !allowPendingCodexAuthorization) {
+      checks.push(["Codex lifecycle hook authorization", codexHooks.authorized]);
+    }
+    if (codexHooks.authorizationRequired) {
+      const action = codexHooks.reason === "reauthorization_required" ? "reauthorization" : "authorization";
+      warn(
+        `Codex lifecycle hooks require ${action}; automatic memory is not ready. `
+        + "Fully quit and reopen Codex, then open Settings > Hooks, select dDuo Solo Founder, "
+        + "and choose Review and Trust all. Run --verify again for this project after approving.",
+      );
+    }
   }
   const failures = checks.filter(([, ok]) => !ok);
   if (failures.length) {
@@ -2274,6 +2298,10 @@ function verify(targets = verificationTargets()) {
     return false;
   }
   const clients = targets.length ? targets.map(clientLabel).join(" + ") : "core";
+  if (codexHooks?.authorizationRequired) {
+    log(`INSTALLED  components verified (${clients}); Codex lifecycle hook authorization is pending.`);
+    return true;
+  }
   log(`PASS  installation verified (${clients})`);
   return true;
 }
@@ -2470,7 +2498,12 @@ else {
       codexTransaction = installCodex();
       if (codexTransaction?.installed) installedTargets.push("codex");
     }
-    if (!verify(installedTargets)) throw new Error("Installed dDuo components did not pass verification.");
+    // A first install cannot receive native hook consent until Codex reloads
+    // the new adapter. Commit valid files while keeping that pending action
+    // explicit; standalone --verify requires authorization as well.
+    if (!verify(installedTargets, { allowPendingCodexAuthorization: true })) {
+      throw new Error("Installed dDuo components did not pass verification.");
+    }
     // This is intentionally the last fallible migration check inside the
     // coordinated rollback boundary. A late Alpha writer therefore fails the
     // upgrade while both the old and frozen copies are still recoverable.
@@ -2514,7 +2547,7 @@ else {
     } catch (error) {
       const detail = String(error?.message || error).split("\n", 1)[0];
       warn(
-        `Installation verified, but ${subject} is incomplete. `
+        `Installed components verified, but ${subject} is incomplete. `
         + `Re-run the installer to retry cleanup: ${detail}`,
       );
     }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -47,16 +48,6 @@ def _write_executable(path: Path, content: str) -> None:
 def _runtime_wrapper(python: Path, entrypoint: str, *, setup_noop: bool = False) -> str:
     setup_guard = (
         'if [ "$1" = "setup" ] || [ "$1" = "bridge-stop" ]; then exit 0; fi\n'
-        'if [ "$1" = "client-readiness" ]; then\n'
-        "  printf '%s\\n' "
-        "'"
-        '{"client":"codex","ready":false,"authentication":{"ready":true},'
-        '"hooks":{"ready":false,"reason":"authorization_required","hook_count":3,'
-        '"trust_statuses":["untrusted"],"events":["sessionStart","stop",'
-        '"userPromptSubmit"]},"actions":[]}'
-        "'\n"
-        "  exit 8\n"
-        "fi\n"
         if setup_noop
         else ""
     )
@@ -143,13 +134,44 @@ if [ "$1" = "sync" ]; then
 fi
 """,
     )
+    codex_app_server = binaries / "codex-app-server.py"
+    _write_executable(
+        codex_app_server,
+        """import json
+import os
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if method == "initialized":
+        continue
+    if method == "initialize":
+        result = {}
+    elif method == "hooks/list":
+        cwd, = request["params"]["cwds"]
+        assert cwd == os.getcwd()
+        result = {"data": [{"cwd": cwd, "hooks": [
+            {"pluginId": "dduo-solo-founder@personal", "eventName": event,
+             "enabled": True, "trustStatus": "trusted"}
+            for event in ("sessionStart", "userPromptSubmit", "stop")
+        ]}]}
+    else:
+        raise AssertionError(f"Unexpected Codex method: {method}")
+    print(json.dumps({"id": request["id"], "result": result}), flush=True)
+    if method == "hooks/list":
+        break
+""",
+    )
     _write_executable(
         binaries / "codex",
         f"""#!/bin/sh
 printf 'codex %s\\n' "$*" >> {json.dumps(str(commands))}
 if [ "$1" = "--version" ]; then echo 'codex-cli 0.150.0'; fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then echo 'Logged in using ChatGPT'; fi
 if [ "$1" = "features" ] && [ "$2" = "list" ]; then echo 'hooks stable true'; fi
 if [ "$1" = "plugin" ] && [ "$2" = "list" ]; then echo '{{"installed":[],"available":[]}}'; fi
+if [ "$1" = "app-server" ]; then exec {shlex.join([str(python), str(codex_app_server)])}; fi
 """,
     )
     _write_executable(
@@ -554,10 +576,12 @@ async def smoke():
         ) as session:
             initialized = await session.initialize()
             tools = await session.list_tools()
+            connection = await session.call_tool("check_memory_connection", {})
             briefing = await session.call_tool("get_project_briefing", {})
             print(json.dumps({
                 "server_name": initialized.server_info.name,
                 "tools": [tool.name for tool in tools.tools],
+                "connection": connection.structured_content,
                 "briefing": briefing.structured_content,
             }))
 
@@ -571,6 +595,14 @@ anyio.run(smoke)
         mcp_payload = json.loads(mcp.stdout)
         assert mcp_payload["server_name"] == "dduo-solo-founder"
         assert "get_project_briefing" in mcp_payload["tools"]
+        assert "check_memory_connection" in mcp_payload["tools"]
+        assert mcp_payload["connection"]["requires_choice"] is False
+        if client == "codex":
+            assert mcp_payload["connection"]["ready"] is True
+            assert mcp_payload["connection"]["reason"] == "authorized"
+        else:
+            assert mcp_payload["connection"]["ready"] is None
+            assert mcp_payload["connection"]["reason"] == "native_verification_unavailable"
         assert mcp_payload["briefing"]["project"]["name"] == "Remote onboarding smoke"
 
         dashboard = _run(
@@ -606,3 +638,7 @@ anyio.run(smoke)
     assert any(request["path"].endswith("/sessions") for request in authenticated)
     assert any(request["path"].endswith("/briefing") for request in authenticated)
     assert any(request["path"].endswith("/auth/browser-ticket") for request in authenticated)
+    if client == "codex":
+        client_commands = home.joinpath("client-commands.log").read_text()
+        assert "codex login status" in client_commands
+        assert client_commands.count("codex app-server --stdio") >= 2

@@ -36,13 +36,13 @@ RUNTIME_EXECUTABLES = (
 CODEX_HOOK_DISCOVERY_JSON = json.dumps(
     {
         "client": "codex",
-        "ready": False,
+        "ready": True,
         "authentication": {"ready": True},
         "hooks": {
-            "ready": False,
-            "reason": "authorization_required",
+            "ready": True,
+            "reason": "authorized",
             "hook_count": 3,
-            "trust_statuses": ["untrusted"],
+            "trust_statuses": ["trusted"],
             "events": [
                 "sessionStart",
                 "stop",
@@ -705,6 +705,62 @@ def test_installer_selects_compatible_desktop_codex_over_stale_path_cli(tmp_path
 
 
 @pytest.mark.parametrize(
+    ("reason", "trust_status", "readiness_exit"),
+    [
+        ("authorization_required", "untrusted", 0),
+        ("authorization_required", "untrusted", 8),
+        ("reauthorization_required", "modified", 8),
+    ],
+)
+def test_installer_preserves_pending_native_consent_without_passing_verification(
+    tmp_path: Path, reason: str, trust_status: str, readiness_exit: int,
+):
+    env, log, _ = _write_codex_installer_stubs(tmp_path, path_version="0.150.0")
+    project = tmp_path / "selected project"
+    project.mkdir()
+    readiness = json.loads(CODEX_HOOK_DISCOVERY_JSON)
+    readiness["ready"] = False
+    readiness["hooks"].update(ready=False, reason=reason, trust_statuses=[trust_status])
+    executable = tmp_path / "bin/dduo-solo-founder"
+    executable.write_text(
+        f'#!/bin/sh\necho "dduo-solo-founder $*" >> "{log}"\n'
+        'if [ "$1" = "client-readiness" ]; then\n'
+        f"  printf '%s\\n' '{json.dumps(readiness)}'\n"
+        f"  exit {readiness_exit}\n"
+        "fi\n"
+    )
+    command = [
+        "node", str(ROOT / "bin/install.mjs"), "--only", "codex",
+        "--project-root", str(project), "--no-setup",
+    ]
+    # Installation and an update both retain valid components for the user's
+    # subsequent native review; standalone verification must remain a failure.
+    for _attempt in range(2):
+        installed = subprocess.run(
+            [*command, "--yes"], capture_output=True, text=True, env=env,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+        assert "INSTALLED  components verified (Codex)" in installed.stdout
+        assert "PASS  installation verified" not in installed.stdout
+        assert "Settings > Hooks" in installed.stderr
+        assert "Review and Trust all" in installed.stderr
+        assert "automatic memory is not ready" in installed.stderr
+        assert "CODEX_APP_RESTART_REQUIRED" in installed.stdout
+        verified = subprocess.run(
+            [*command, "--verify"], capture_output=True, text=True, env=env,
+        )
+        assert verified.returncode == 1
+        assert "FAIL  Codex lifecycle hook authorization" in verified.stdout
+        assert "PASS  installation verified" not in verified.stdout
+        assert "Settings > Hooks" in verified.stderr
+        assert (tmp_path / "plugins/dduo-solo-founder/.codex-plugin/plugin.json").is_file()
+    commands = log.read_text()
+    assert f"client-readiness --client codex --project-root {project}" in commands
+    assert "codex hooks trust" not in commands
+    assert "codex hooks authorize" not in commands
+
+
+@pytest.mark.parametrize(
     ("reason", "hook_count", "events"),
     [
         (
@@ -714,6 +770,11 @@ def test_installer_selects_compatible_desktop_codex_over_stale_path_cli(tmp_path
         ),
         (
             "hooks_disabled",
+            3,
+            ["sessionStart", "stop", "userPromptSubmit"],
+        ),
+        (
+            "authorized",
             3,
             ["sessionStart", "stop", "userPromptSubmit"],
         ),
@@ -853,7 +914,7 @@ fi
     assert "CODEX_APP_RESTART_REQUIRED" in result.stdout
     assert result.stderr.count("WARN  ") == 1
     assert (
-        "Installation verified, but legacy OpenDduo cleanup is incomplete. "
+        "Installed components verified, but legacy OpenDduo cleanup is incomplete. "
         "Re-run the installer to retry cleanup: "
         "Legacy OpenDduo Codex plugin is still installed."
     ) in result.stderr
@@ -896,7 +957,7 @@ def test_installer_continues_other_cleanup_when_retired_updater_cleanup_fails(
     assert "CODEX_APP_RESTART_REQUIRED" in result.stdout
     assert result.stderr.count("WARN  ") == 1
     assert (
-        "Installation verified, but retired Alpha updater cleanup is incomplete. "
+        "Installed components verified, but retired Alpha updater cleanup is incomplete. "
         "Re-run the installer to retry cleanup:"
     ) in result.stderr
     assert "legacy OpenDduo cleanup is incomplete" not in result.stderr
@@ -985,7 +1046,7 @@ fi
     assert "CODEX_APP_RESTART_REQUIRED" in result.stdout
     assert result.stderr.count("WARN  ") == 1
     assert (
-        "Installation verified, but Codex installation finalization is incomplete. "
+        "Installed components verified, but Codex installation finalization is incomplete. "
         "Re-run the installer to retry cleanup:"
     ) in result.stderr
     assert len(plugin_rollbacks) == 1
@@ -1291,7 +1352,7 @@ def test_installer_creates_and_removes_isolated_distribution(tmp_path: Path):
         '    printf \'{"client":"codex","ready":false,"authentication":{"ready":true,"reason":"authenticated","login_command":"codex login"},"hooks":{"ready":false,"reason":"authorization_required","hook_count":3,"events":["sessionStart","stop","userPromptSubmit"]},"actions":[]}\\n\'\n'
         "  else\n"
         '    if [ "$client" = "codex" ]; then\n'
-        '      printf \'{"client":"codex","ready":false,"authentication":{"ready":true,"reason":"authenticated","login_command":"codex login"},"hooks":{"ready":false,"reason":"authorization_required","hook_count":3,"events":["sessionStart","stop","userPromptSubmit"]},"actions":[]}\\n\'\n'
+        '      printf \'{"client":"codex","ready":true,"authentication":{"ready":true,"reason":"authenticated","login_command":"codex login"},"hooks":{"ready":true,"reason":"authorized","hook_count":3,"events":["sessionStart","stop","userPromptSubmit"]},"actions":[]}\\n\'\n'
         "    else\n"
         '      printf \'{"client":"%s","ready":true,"authentication":{"ready":true,"reason":"authenticated","login_command":"%s login"},"hooks":null,"actions":[]}\\n\' "$client" "$client"\n'
         "    fi\n"

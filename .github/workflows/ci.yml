@@ -59,6 +59,7 @@ jobs:
           tests/test_client_binding.py
           tests/test_client_http.py
           tests/test_client_readiness.py
+          tests/test_memory_connection.py
           tests/test_client_telemetry.py
           tests/test_context_budget.py
           tests/test_invitations.py

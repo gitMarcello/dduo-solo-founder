@@ -17,6 +17,15 @@ from mcp.shared.memory import create_client_server_memory_streams
 from dduo_solo_founder import mcp_server
 
 
+@pytest.fixture(autouse=True)
+def authorized_native_hooks(monkeypatch):
+    # Domain contract tests never inspect the real workstation's native trust.
+    monkeypatch.setattr(
+        mcp_server._MEMORY_CONNECTION_CHECKS, "check",
+        lambda *_args, **_kwargs: {"ready": True, "requires_choice": False},
+    )
+
+
 async def _sdk_session(client_name: str, operation):
     server = mcp_server.create_mcp_server()
     initialization = server.create_initialization_options()
@@ -46,6 +55,7 @@ def test_mcp_contract_contains_complete_protocol_and_real_schemas():
         "decline_setup",
         "open_setup",
         "check_setup",
+        "check_memory_connection",
         "get_project_briefing",
         "get_project_manual",
         "update_project_manual",
