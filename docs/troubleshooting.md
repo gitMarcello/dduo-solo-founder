@@ -75,12 +75,23 @@ instead of creating a new identity with `init`.
 
 ## The dashboard says Connection required
 
-The project-owned Codex sleep executor needs its official subscription
-connection again. Select **Open Setup** and complete the native Codex sign-in
-for that project's private `CODEX_HOME`. On a headless host, the infrastructure
+The project-owned sleep account needs reconnecting. Changing the account in
+Codex does not replace this isolated login; a saved login can still be revoked.
+Setup now checks actual sleep failures as well as saved credentials. The plugin
+reports the problem **in the current chat** and asks whether to fix it or continue
+temporarily. Existing memories and captured turns are retained; a paused sleep
+does not by itself mean that capture or retrieval has stopped.
+
+After choosing to fix it, select **Reconnect** in Setup and complete official
+sign-in for that project's private `CODEX_HOME`. Only a completed, verified login
+permits resuming its sleep jobs; opening Setup alone never resumes them. Failed
+resume requests offer an explicit retry. Scheduled means queued, not recovered:
+verify a successful consolidation. No host credentials are copied or accounts
+silently switched during reconnection. On a headless host, the infrastructure
 manager runs `dduo-solo-founder login-codex --device-auth` in the server project
 checkout. Pending memory jobs remain durable and interactive work can continue
-while this happens.
+while this happens. Remote collaborators ask the infrastructure manager to
+reconnect on the server; they do not change their local account or start Docker.
 
 ## The dashboard says Temporary usage limit
 

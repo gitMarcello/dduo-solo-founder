@@ -78,12 +78,24 @@ senza creare una nuova identità con `init`.
 <a id="the-dashboard-says-connection-required"></a>
 ## La dashboard mostra Connection required
 
-L'esecutore Codex del progetto richiede una nuova connessione ufficiale
-all'abbonamento. Apri Setup e completa il login nativo nel `CODEX_HOME` privato
-di quel progetto. Su un host senza browser, il Gestore dell'infrastruttura
+L'account del sonno richiede un nuovo accesso. Cambiare account nell'app Codex
+non sostituisce questo login isolato: un accesso salvato può essere revocato.
+Setup verifica anche gli errori effettivi del sonno. Il plugin avvisa **nella
+chat corrente** e chiede se risolvere o continuare temporaneamente. Memorie e
+turni acquisiti restano salvati; il sonno fermo non significa, da solo, che
+anche salvataggio e recupero siano interrotti.
+
+Dopo aver scelto di risolvere, premi **Ricollega** in Setup e completa l'accesso
+ufficiale nel `CODEX_HOME` privato del progetto. Solo il login concluso e
+verificato permette di riprendere i lavori: aprire Setup non li riavvia.
+Se la richiesta di ripresa fallisce, puoi ritentarla esplicitamente.
+“Programmato” significa in coda, non recuperato: verifica un consolidamento
+riuscito. La riconnessione non copia credenziali dell'host e non cambia account
+silenziosamente. Su un host senza browser, il Gestore dell'infrastruttura
 esegue `dduo-solo-founder login-codex --device-auth` dal checkout del progetto
 sul server. I lavori di memoria pendenti restano salvati e il lavoro
-interattivo può continuare.
+interattivo può continuare. I collaboratori remoti chiedono al gestore di
+ricollegare il server: non cambiano account locale e non avviano Docker.
 
 <a id="the-dashboard-says-temporary-usage-limit"></a>
 ## La dashboard mostra Temporary usage limit

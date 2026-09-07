@@ -40,6 +40,7 @@ def isolate_native_checks(monkeypatch):
     )
     monkeypatch.delenv(mcp_server.MCP_CLIENT_ENV, raising=False)
     monkeypatch.delenv(mcp_server.MCP_PROJECT_ROOT_ENV, raising=False)
+    monkeypatch.setattr(mcp_server, "_read_connection_health", lambda _runtime: {"state": "updated"})
 
 
 async def _sdk_session(client_name, operation):
@@ -535,3 +536,38 @@ async def test_sdk_invalid_acknowledgement_fails_before_probe_or_operation(
 
     await _sdk_session("Codex Desktop", sequence)
     assert sdk_runtime.calls == []
+
+
+@pytest.mark.parametrize("client_name", ["Codex Desktop", "Claude Code"])
+@pytest.mark.parametrize("remote", [False, True])
+async def test_sdk_sleep_auth_failure_requires_choice_even_with_approved_hooks(
+    monkeypatch, sdk_runtime, client_name, remote
+):
+    sdk_runtime.state.remote = remote
+    health = {"state": "connection_required", "provider": "codex", "issue_id": "first-attempt"}
+    monkeypatch.setattr(mcp_server, "_read_connection_health", lambda runtime: health)
+    monkeypatch.setattr(memory_connection, "codex_hook_status", lambda root: _status("authorized", ready=True))
+    arguments = {"workspace_root": str(sdk_runtime.root)}
+
+    async def sequence(session):
+        first = _payload(await session.call_tool("list_tasks", arguments))
+        assert first["tool_executed"] is False
+        assert first["reason"] == "sleep_auth_required"
+        assert "Saved turns" in first["message"]
+        assert "current conversation" in first["response_instruction"]
+        assert ("infrastructure manager" in first["next_action"]) is remote
+        assert sdk_runtime.calls == []
+        checked = _payload(await session.call_tool("check_memory_connection", arguments))
+        assert checked["warning_id"] == first["warning_id"]
+        ack = {**arguments, "memory_warning_ack": first["warning_id"]}
+        assert _payload(await session.call_tool("list_tasks", ack))["executed"] == "list_tasks"
+        assert _payload(await session.call_tool("list_tasks", arguments))["tool_executed"] is False
+        health["issue_id"] = "second-attempt"
+        changed = _payload(await session.call_tool("list_tasks", ack))
+        assert changed["tool_executed"] is False
+        assert changed["warning_id"] != first["warning_id"]
+        health.update(state="updating", issue_id=None)
+        assert _payload(await session.call_tool("list_tasks", arguments))["executed"] == "list_tasks"
+
+    await _sdk_session(client_name, sequence)
+    assert len(sdk_runtime.calls) == 2

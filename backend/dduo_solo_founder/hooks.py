@@ -41,6 +41,7 @@ from dduo_solo_founder.observability import (
     estimated_tokens_for_text,
 )
 from dduo_solo_founder.operating_contract import COFOUNDER_CONTRACT, TASK_CONTRACT
+from dduo_solo_founder.connection_health import sleep_connection_notice
 from dduo_solo_founder.project_activation import setup_declined
 from dduo_solo_founder.project_config import (
     dashboard_item_url,
@@ -56,7 +57,8 @@ CONTEXT_DELIVERY_STATE_VERSION = 2
 TURN_CONTRACT = (
     "Keep applying the standing Founder Brief already present in this live session. dDuo has recorded "
     "this turn and supplied only changed project state and relevant recall. Memory consolidation is "
-    "asynchronous; do not create semantic memories yourself. Continue normally if memory sleep is waiting. "
+    "asynchronous; do not create semantic memories yourself. Ordinary queued sleep does not block work; "
+    "if a health notice requires user action, explain it and ask for the user's choice first. "
 )
 SESSION_REFRESH_CONTRACT = (
     "Keep applying the standing Founder Brief already present in this resumed session. This refresh "
@@ -921,12 +923,14 @@ def flush_spooled_turns(
     return persisted
 
 
-def _memory_notice(briefing: dict) -> str:
+def _memory_notice(briefing: dict, *, remote: bool = False) -> str:
     status = briefing.get("memory_status") or {}
-    if status.get("available", True):
+    if not status or (status.get("available", True) and not status.get("state")):
         return ""
-    summary = str(status.get("summary") or "Memory consolidation is waiting.")
-    return f"{summary} Continue working normally; dDuo will preserve and retry queued turns. "
+    notice = sleep_connection_notice(status, remote=remote)
+    if notice is None:
+        return ""
+    return " ".join((notice["message"], notice["next_action"], notice["response_instruction"]))
 
 
 def _scope_memory_status(briefing: dict, client: str) -> dict:
@@ -2188,11 +2192,7 @@ def session_start() -> None:
                 pass
         setup_notice = ""
         memory_status = _scope_memory_status(briefing, client)
-        if memory_status.get("state") == "connection_required" and not binding.remote:
-            opened = request_setup_once(str(project["id"]), client, root)
-            if opened or setup_is_pending(str(project["id"]), client):
-                setup_notice = setup_handoff_notice(client, opened=opened)
-        else:
+        if memory_status.get("state") != "connection_required":
             clear_setup_notice(str(project["id"]), client)
         onboarding = ""
         if briefing.get("onboarding_required"):
@@ -2200,7 +2200,7 @@ def session_start() -> None:
                 "dDuo is active. Ask in one message what this project is for, its objectives, principles, "
                 "current state, and main activities; then save the confirmed profile. "
             )
-        memory_notice = _memory_notice(briefing)
+        memory_notice = _memory_notice(briefing, remote=binding.remote)
         full_compact_briefing = _context_for_model(briefing)
         full_compact_briefing["dashboard_url"] = binding.dashboard_link("tasks")
         baseline = (
@@ -2582,13 +2582,9 @@ def user_prompt_submit() -> None:
                 COFOUNDER_CONTRACT + TASK_CONTRACT if foundation_changed else ""
             )
         setup_notice = ""
-        if memory_status.get("state") == "connection_required" and not binding.remote:
-            opened = request_setup_once(str(project["id"]), client, project_root(payload))
-            if opened or setup_is_pending(str(project["id"]), client):
-                setup_notice = setup_handoff_notice(client, opened=opened)
-        else:
+        if memory_status.get("state") != "connection_required":
             clear_setup_notice(str(project["id"]), client)
-        memory_notice = _memory_notice(context)
+        memory_notice = _memory_notice(context, remote=binding.remote)
         composed = compose_founder_context(
             compact,
             contracts=TURN_CONTRACT,

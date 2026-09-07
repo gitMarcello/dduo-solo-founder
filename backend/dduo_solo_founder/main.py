@@ -146,6 +146,7 @@ from dduo_solo_founder.service import (
     commit_turn,
     ensure_open_segment,
     memory_health,
+    memory_health_job_order,
     persist_compaction,
     mark_project_dirty,
     project_memory_health,
@@ -2731,9 +2732,11 @@ async def get_memory_status(
     latest_statement = select(SleepJob).where(SleepJob.project_id == project_id)
     latest = await db.scalar(
         latest_statement.where(SleepJob.status == "waiting")
-        .order_by(desc(SleepJob.created_at))
+        .order_by(*memory_health_job_order())
         .limit(1)
-    ) or await db.scalar(latest_statement.order_by(desc(SleepJob.created_at)).limit(1))
+    ) or await db.scalar(
+        latest_statement.order_by(desc(SleepJob.created_at), desc(SleepJob.id)).limit(1)
+    )
     status = await project_memory_health(
         db,
         project_id,
@@ -2742,6 +2745,7 @@ async def get_memory_status(
     )
     return {
         **status,
+        "executor_provider": sleep_executor_provider(),
         "memories": memory_counts,
         "latest_job": serialize_sleep_job(latest) if latest else None,
     }

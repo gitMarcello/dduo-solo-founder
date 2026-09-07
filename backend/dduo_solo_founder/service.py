@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from sqlalchemy import case, desc, func, select
@@ -67,23 +68,48 @@ def utcnow() -> datetime:
 
 
 def memory_health(sleep_counts: dict, latest_sleep) -> dict:
-    """Return a dashboard-safe view of asynchronous memory consolidation."""
+    """Return canonical consolidation health without job content or diagnostics."""
     waiting = int(sleep_counts.get("waiting") or 0)
     pending = int(sleep_counts.get("pending") or 0) + int(sleep_counts.get("running") or 0)
-    kind = getattr(latest_sleep, "error_kind", None) if latest_sleep else None
-    provider = getattr(latest_sleep, "provider", None) if latest_sleep else None
-    retry_at = getattr(latest_sleep, "retry_at", None) if latest_sleep else None
+    kind = getattr(latest_sleep, "error_kind", None) if waiting else None
+    provider = getattr(latest_sleep, "provider", None)
+    retry_at = getattr(latest_sleep, "retry_at", None) if waiting else None
+    requires_action = bool(waiting and (kind == "auth_required" or retry_at is None))
+    next_action = None
+    issue_id = None
+    job_id = getattr(latest_sleep, "id", None)
+    if waiting and job_id:
+        # Attempts distinguish a newly failed execution from an acknowledged
+        # warning for the same durable job. Never hash diagnostic or turn text.
+        episode = json.dumps(
+            [job_id, getattr(latest_sleep, "attempts", 0), kind, provider],
+            separators=(",", ":"),
+        )
+        issue_id = "memory:" + hashlib.sha256(episode.encode("utf-8")).hexdigest()
     if waiting and kind == "auth_required":
         summary = (
-            f"Connect {(provider or 'the selected client').title()} in Setup to resume memory."
+            f"Connect {(provider or 'the selected client').title()} in Setup to resume memory. "
+            "Authentication failures do not retry automatically."
         )
         state = "connection_required"
+        next_action = "reconnect"
+        retry_at = None
     elif waiting and kind == "rate_limited":
-        summary = "Memory has a temporary usage limit and will retry automatically."
+        summary = (
+            "Memory has a temporary usage limit and will retry automatically."
+            if retry_at is not None
+            else "Memory has a temporary usage limit. Check Setup before retrying consolidation."
+        )
         state = "limited"
+        next_action = "check_service" if requires_action else None
     elif waiting:
-        summary = "Local memory will retry automatically."
+        summary = (
+            "Memory consolidation will retry automatically."
+            if retry_at is not None
+            else "Memory consolidation is paused. Check the memory service in Setup."
+        )
         state = "waiting"
+        next_action = "check_service" if requires_action else None
     elif pending:
         summary = "Recent turns are waiting to be consolidated."
         state = "updating"
@@ -97,7 +123,25 @@ def memory_health(sleep_counts: dict, latest_sleep) -> dict:
         "retry_at": retry_at,
         "provider": provider,
         "error_kind": kind,
+        "issue_id": issue_id,
+        "requires_action": requires_action,
+        "next_action": next_action,
     }
+
+
+def memory_health_job_order() -> tuple:
+    """Prioritize actionable failures, with deterministic ties across consumers."""
+    from dduo_solo_founder.models import SleepJob
+
+    return (
+        case(
+            (SleepJob.error_kind == "auth_required", 0),
+            (SleepJob.retry_at.is_(None), 1),
+            else_=2,
+        ),
+        desc(SleepJob.created_at),
+        desc(SleepJob.id),
+    )
 
 
 async def project_memory_health(
@@ -130,10 +174,12 @@ async def project_memory_health(
             statement = statement.where(SleepJob.provider == selected_provider)
         waiting = await db.scalar(
             statement.where(SleepJob.status == "waiting")
-            .order_by(desc(SleepJob.created_at))
+            .order_by(*memory_health_job_order())
             .limit(1)
         )
-        return waiting or await db.scalar(statement.order_by(desc(SleepJob.created_at)).limit(1))
+        return waiting or await db.scalar(
+            statement.order_by(desc(SleepJob.created_at), desc(SleepJob.id)).limit(1)
+        )
 
     counts = await counts_for(provider)
     latest = await latest_for(provider)

@@ -24,6 +24,7 @@ def authorized_native_hooks(monkeypatch):
         mcp_server._MEMORY_CONNECTION_CHECKS, "check",
         lambda *_args, **_kwargs: {"ready": True, "requires_choice": False},
     )
+    monkeypatch.setattr(mcp_server, "_read_connection_health", lambda _runtime: {"state": "updated"})
 
 
 async def _sdk_session(client_name: str, operation):
@@ -276,6 +277,7 @@ def test_call_requires_configuration_except_health_or_setup(monkeypatch, tmp_pat
 
 def test_check_setup_returns_one_safe_next_action_and_verifies_completion(monkeypatch, tmp_path):
     state = {
+        "memory_status": {"state": "updated"},
         "docker": {"ready": False},
         "embeddings": {"ready": False},
         "clients": {"codex": {"ready": False, "setup_state": "waiting"}},
@@ -358,6 +360,7 @@ def test_setup_requires_an_explicit_root_and_skips_client_actions_without_a_prov
     monkeypatch, tmp_path
 ):
     state = {
+        "memory_status": {"state": "updated"},
         "docker": {"ready": True},
         "embeddings": {"ready": True},
         "clients": {},
@@ -401,7 +404,7 @@ def test_remote_setup_tools_never_open_local_setup_or_require_docker(monkeypatch
         mcp_server,
         "request",
         lambda api, method, path, body=None: calls.append((api, method, path, body))
-        or {"current_member": {"id": "member-1"}},
+        or ({"state": "updated"} if path.endswith("memory-status") else {"current_member": {"id": "member-1"}}),
     )
 
     opened = mcp_server.call(
@@ -434,7 +437,8 @@ def test_remote_setup_tools_never_open_local_setup_or_require_docker(monkeypatch
     assert checked["next_action"] is None
     assert checked["docker_required"] is False
     assert calls == [
-        ("https://203.0.113.10/api", "GET", "/projects/p1/team", None)
+        ("https://203.0.113.10/api", "GET", "/projects/p1/team", None),
+        ("https://203.0.113.10/api", "GET", "/projects/p1/memory-status", None),
     ]
 
     monkeypatch.setattr(

@@ -31,6 +31,7 @@ from dduo_solo_founder.client_support import (
 )
 from dduo_solo_founder.manual_cache import load_verified_manual, store_verified_manual
 from dduo_solo_founder.memory_connection import MemoryConnectionChecks
+from dduo_solo_founder.connection_health import combine_connection_checks, sleep_connection_notice
 from dduo_solo_founder.observability import ESTIMATOR_VERSION, estimated_tokens_for_text
 from dduo_solo_founder.operating_contract import HUMAN_WORK_RESPONSE_INSTRUCTION
 from dduo_solo_founder.launcher import get_setup_status as read_setup_status
@@ -71,6 +72,7 @@ MCP_WARNING_ACK_ARGUMENT = "memory_warning_ack"
 _MEMORY_CONNECTION_CHECKS = MemoryConnectionChecks()
 _CONNECTION_EXEMPT_TOOLS = {
     "check_memory_connection", "check_setup", "open_setup", "decline_setup", "health",
+    "get_memory_status", "list_sleep_jobs",
     # Privacy requests must never wait for a memory-health choice.
     "set_off_record",
 }
@@ -953,17 +955,25 @@ def _setup_check(status: dict, provider: str | None) -> dict:
             }
         )
 
+    health = status.get("memory_status")
+    issue = sleep_connection_notice(health if isinstance(health, dict) else {"state": "unknown"})
+    if issue is not None and bool((status.get("project") or {}).get("ready")):
+        remaining.append({"id": issue["reason"], "title": "Check project memory", "detail": issue["message"] + " " + issue["next_action"]})
     ready = not remaining
     return {
         "ready": ready,
+        "memory_state": health.get("state") if isinstance(health, dict) else None,
         "provider": provider,
         "next_action": remaining[0] if remaining else None,
         "remaining_actions": remaining,
         "response_instruction": (
             "Setup is verified. If this was installation, update, or first activation, tell the founder in one "
-            "short sentence to open a new chat in this same folder. Otherwise say memory is connected again and "
-            "continue normal work."
+            "short sentence to open a new chat in this same folder. Otherwise report that setup checks passed. "
+            "If memory_state is updating, say consolidation is queued, not recovered. "
+            "A stored login is not proof of successful consolidation; verify an actual sleep result."
             if ready
+            else issue["response_instruction"]
+            if issue is not None and remaining[0]["id"] == issue["reason"]
             else "Do not claim Setup is complete. State only next_action.detail in the founder's language, call "
             "open_setup once, then ask the founder to reply 'fatto' when it is complete. Stop and wait for that "
             "reply."
@@ -981,6 +991,7 @@ def check_setup(project_root: Path | None, provider: str | None) -> dict:
     except Exception:
         return {
             "ready": False,
+            "requires_choice": True,
             "provider": provider,
             "next_action": {
                 "id": "setup_unavailable",
@@ -1081,15 +1092,27 @@ def _check_remote_setup(api, binding: ProjectBinding | None, provider: str | Non
             "mode": "remote",
             "provider": provider,
             "project_id": binding.project_id,
+            "requires_choice": True,
             "docker_required": False,
             "local_setup_required": False,
             "next_action": action,
             "remaining_actions": [action],
             "response_instruction": (
                 "Do not open local Setup or start Docker. State only next_action.detail in the "
-                "founder's language, then continue work without current memory if possible."
+                "founder's language. Ask whether to repair it or continue without current memory; "
+                "wait for the choice."
             ),
         }
+    try:
+        health = request(api, "GET", f"/projects/{binding.project_id}/memory-status")
+    except Exception:
+        health = {"state": "unknown"}
+    issue = sleep_connection_notice(health if isinstance(health, dict) else {}, remote=True)
+    if issue:
+        action = {"id": issue["reason"], "title": "Check shared memory", "detail": issue["message"] + " " + issue["next_action"]}
+        return {**issue, "mode": "remote", "provider": provider, "project_id": binding.project_id,
+                "docker_required": False, "local_setup_required": False,
+                "next_action": action, "remaining_actions": [action]}
     return {
         "ready": True,
         "mode": "remote",
@@ -1100,8 +1123,8 @@ def _check_remote_setup(api, binding: ProjectBinding | None, provider: str | Non
         "next_action": None,
         "remaining_actions": [],
         "response_instruction": (
-            "Shared remote memory is reachable. Do not open local Setup or start Docker; confirm "
-            "the connection in one short sentence and continue normal project work."
+            "Shared remote memory is reachable. Do not open local Setup or start Docker. "
+            "If consolidation is pending, report it as pending rather than verified recovery."
         ),
     }
 
@@ -1575,6 +1598,21 @@ def _invoke_mcp_tool(
     return value, rendered
 
 
+def _read_connection_health(runtime: MCPToolRuntime) -> dict:
+    """Read the existing project endpoint; never probe a paid model or change login."""
+    try:
+        response = _raw_response(
+            runtime.api, "GET", f"/projects/{runtime.project_id}/memory-status", timeout=5
+        )
+        response.raise_for_status()
+        value = response.json()
+        if isinstance(value, dict) and isinstance(value.get("state"), str):
+            return value
+    except (httpx.HTTPError, ValueError, OSError):
+        pass
+    return {"state": "unavailable", "available": False}
+
+
 def _connection_notice(
     name: str, runtime: MCPToolRuntime, acknowledgement: str | None
 ) -> dict | None:
@@ -1590,6 +1628,11 @@ def _connection_notice(
         runtime.client, runtime.project_root,
         runtime.binding.binding_id if runtime.binding else runtime.project_id,
         refresh=name == "check_memory_connection",
+    )
+    checked = combine_connection_checks(
+        checked, _read_connection_health(runtime),
+        binding_id=runtime.binding.binding_id if runtime.binding else runtime.project_id,
+        remote=bool(runtime.binding and runtime.binding.remote),
     )
     if name == "check_memory_connection":
         return checked
@@ -1649,7 +1692,7 @@ async def _call_mcp_tool(
         )
         if notice is not None:
             # This is a local control response, not a delivered project payload.
-            # In particular no task mutation, API call or telemetry flush occurs.
+            # Only read-only readiness checks ran; no task mutation or telemetry flush occurs.
             return mcp_types.CallToolResult(
                 content=[mcp_types.TextContent(type="text", text=json.dumps(notice))],
                 structuredContent=notice,

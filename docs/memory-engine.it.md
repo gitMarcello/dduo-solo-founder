@@ -142,7 +142,7 @@ Solo questi errori lasciano un job sleep in attesa:
 
 | Tipo | Comportamento |
 | --- | --- |
-| `auth_required` | Apre Setup locale una volta; riprende dopo l'accesso nativo. |
+| `auth_required` | Avvisa in chat e chiede se ricollegare o continuare temporaneamente. Riprende solo dopo accesso nativo verificato; sui progetti remoti interviene il gestore dell'infrastruttura. |
 | `rate_limited` | Attende la finestra registrata e riprova automaticamente. |
 | `bridge_unavailable` | Riprova localmente con intervalli esponenziali. |
 | `dependency_unavailable` | Riprova dopo il ripristino della dipendenza locale mancante. |
