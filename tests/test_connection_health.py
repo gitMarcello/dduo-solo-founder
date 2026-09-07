@@ -57,3 +57,21 @@ def test_read_health_outage_and_missing_setup_health_never_claim_ready(monkeypat
     checked = mcp_server.check_setup(tmp_path, None)
     assert checked["ready"] is False
     assert checked["next_action"]["id"] == "memory_status_unavailable"
+
+
+@pytest.mark.parametrize("mode", ["auth", "outage", "invalid"])
+def test_remote_setup_reports_operational_failure_without_local_reconnect(monkeypatch, tmp_path, mode):
+    binding = mcp_server.ProjectBinding(project_id="p1", name="Remote", root_path=tmp_path, kind="remote", api_url="https://memory.example.test", dashboard_url=None, binding_id="binding")
+    def request(api, method, path):
+        if path.endswith("/team"):
+            return {"current_member": {"id": "member"}}
+        if mode == "outage":
+            raise httpx.ConnectError("private diagnostic")
+        return [] if mode == "invalid" else {"state": "connection_required", "provider": "codex"}
+    monkeypatch.setattr(mcp_server, "request", request)
+    result = mcp_server._check_remote_setup(binding.api_url, binding, "claude")
+    assert result["ready"] is False and result["requires_choice"] is True
+    assert result["docker_required"] is False and result["local_setup_required"] is False
+    assert "infrastructure manager" in result["next_action"]["detail"]
+    assert "check_memory_connection" in result["response_instruction"]
+    assert "private diagnostic" not in str(result)

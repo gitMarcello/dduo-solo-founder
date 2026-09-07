@@ -369,10 +369,12 @@ def _authenticated_server(directory: Path):
                         "tasks": [],
                         "task_counts": {},
                         "recent_handoffs": [],
-                        "memory_status": {"available": True, "state": "ready"},
+                        "memory_status": {"available": True, "state": "updated"},
                         "onboarding_required": False,
                     },
                 )
+            elif parsed.path == f"/api/projects/{PROJECT_ID}/memory-status":
+                self._json(200, {"available": True, "state": "updated", "executor_provider": "codex"})
             elif parsed.path == f"/api/projects/{PROJECT_ID}/team":
                 self._json(
                     200,
@@ -637,6 +639,7 @@ anyio.run(smoke)
     assert all(request["authorization"] == f"Bearer {server_state['token']}" for request in authenticated)
     assert any(request["path"].endswith("/sessions") for request in authenticated)
     assert any(request["path"].endswith("/briefing") for request in authenticated)
+    assert any(request["path"].endswith("/memory-status") for request in authenticated)
     assert any(request["path"].endswith("/auth/browser-ticket") for request in authenticated)
     if client == "codex":
         client_commands = home.joinpath("client-commands.log").read_text()

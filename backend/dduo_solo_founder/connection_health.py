@@ -61,8 +61,9 @@ def sleep_connection_notice(status: dict, *, remote: bool = False) -> dict | Non
             "the dashboard is not the notification channel. "
             + (
                 "Before project work ask whether to fix it now or continue temporarily with the "
-                "stated limitation. Wait for the choice. After explicit consent to continue, use "
-                "warning_id as memory_warning_ack in THIS chat only. "
+                "stated limitation. Wait for the choice. After explicit consent to continue, call "
+                "check_memory_connection and use its current warning_id as memory_warning_ack "
+                "in THIS chat only. "
                 if requires_choice else "Continue work after explaining the temporary limitation. "
             )
             + "Do not repeat an unchanged issue already acknowledged in this chat. "
