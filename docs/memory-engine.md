@@ -141,7 +141,7 @@ Only these failure kinds leave a sleep job waiting:
 
 | Kind | Behaviour |
 | --- | --- |
-| `auth_required` | Open local Setup once; resume only after native sign-in completes. |
+| `auth_required` | Explain in chat and ask whether to reconnect or continue temporarily. Resume only after verified native sign-in; remote projects require their infrastructure manager. |
 | `rate_limited` | Wait until the recorded retry window, then retry automatically. |
 | `bridge_unavailable` | Exponential local retry. |
 | `dependency_unavailable` | Exponential retry after a missing local dependency is repaired. |

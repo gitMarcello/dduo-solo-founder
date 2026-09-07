@@ -4,6 +4,10 @@
 
 First distributed Beta for invited developers using Codex or Claude Code.
 
+- Chat-first configuration notices distinguish hook permission from paused
+  consolidation. Setup detects rejected sleep credentials even with a saved
+  login, reconnects explicitly without switching accounts, and resumes only
+  after verified sign-in; queued work is not presented as completed recovery.
 - Project-isolated memory, semantic retrieval and sleep consolidation, with
   observable context delivery and versioned API-equivalent cost estimates.
 - Work management with Plans, Epics, Tasks, Sprints, Backlog and History.

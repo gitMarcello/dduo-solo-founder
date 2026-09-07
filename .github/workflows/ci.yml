@@ -60,6 +60,9 @@ jobs:
           tests/test_client_http.py
           tests/test_client_readiness.py
           tests/test_memory_connection.py
+          tests/test_connection_health.py
+          tests/test_memory_health.py
+          tests/test_sleep_reconnect.py
           tests/test_client_telemetry.py
           tests/test_context_budget.py
           tests/test_invitations.py

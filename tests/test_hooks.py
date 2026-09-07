@@ -252,7 +252,7 @@ def test_failed_private_spool_never_promises_recovery(monkeypatch, tmp_path):
     assert "queued locally" not in rendered
 
 
-def test_session_start_loads_briefing_and_opens_setup_once_for_expired_auth(monkeypatch, tmp_path):
+def test_session_start_surfaces_expired_auth_before_opening_setup(monkeypatch, tmp_path):
     config_path = tmp_path / ".dduo-solo-founder/project.toml"
     config_path.parent.mkdir()
     config_path.write_text('id = "p1"\nname = "ExampleApp"\napi_port = 8765\nweb_port = 4173\n')
@@ -286,11 +286,11 @@ def test_session_start_loads_briefing_and_opens_setup_once_for_expired_auth(monk
     hooks.session_start()
     assert telemetry_flushes == ["p1"]
     context = json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
-    assert "A local Setup page opened" in context
-    assert "check_setup with this provider" in context
+    assert "Before project work ask whether to fix it now" in context
+    assert "After the user chooses to fix it" in context
     assert "what this project is for" in context
     assert "smallest useful Plan, Epic, or Task structure" in context
-    assert ["dduo-solo-founder", "setup", "--project-root", str(tmp_path)] in calls
+    assert ["dduo-solo-founder", "setup", "--project-root", str(tmp_path)] not in calls
     assert ["dduo-solo-founder", "start", "--project-root", str(tmp_path)] in calls
     state = hooks.read_state(hooks.state_path("p1", "claude", "s1"))
     observation = state["pending_context_observations"][0]
@@ -314,7 +314,7 @@ def test_session_start_loads_briefing_and_opens_setup_once_for_expired_auth(monk
     )
     hooks.session_start()
     assert telemetry_flushes == ["p1", "p1"]
-    assert calls.count(["dduo-solo-founder", "setup", "--project-root", str(tmp_path)]) == 1
+    assert calls.count(["dduo-solo-founder", "setup", "--project-root", str(tmp_path)]) == 0
 
 
 def test_session_start_other_client_uses_the_global_briefing(monkeypatch, tmp_path):
@@ -1514,7 +1514,9 @@ def test_hook_recovery_paths_cover_tty_setup_failures_and_provider_notice_cleanu
     monkeypatch.setattr(hooks, "request_setup_once", lambda *args, **kwargs: True)
     output = hook_input(monkeypatch, {"cwd": str(tmp_path), "client": "claude", "prompt": "Resume"})
     hooks.user_prompt_submit()
-    assert "A local Setup page opened" in json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
+    rendered = json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
+    assert "Before project work ask whether to fix it now" in rendered
+    assert "A local Setup page opened" not in rendered
 
 
 def test_founder_projection_ignores_dirty_optional_rows_and_keeps_actionable_health() -> None:

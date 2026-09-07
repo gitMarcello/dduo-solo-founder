@@ -468,6 +468,65 @@ test('local Setup keeps secrets local, delegates Codex hook trust, and installs 
   );
 });
 
+test('Setup reconnects a failed sleep account explicitly and keeps retry usable after reload', async ({ page }) => {
+  let logins = 0;
+  let resumes = 0;
+  let client = { ready: false, reason: 'auth_required', setup_state: 'idle', resume_ready: false, resume_failed: false };
+  let memoryState = 'connection_required';
+  await page.route('**/v1/setup/status**', (route) => fulfill(route, {
+    docker: { ready: true, installed: true },
+    embeddings: { ready: true },
+    clients: { codex: client, claude: { ready: true, setup_state: 'idle' } },
+    codex_hooks: { ready: true },
+    project: { ready: true, name: 'Browser Project' },
+    memory_status: { state: memoryState },
+    backup: { configured: true },
+  }));
+  await page.route('**/v1/setup/auth**', (route) => {
+    logins += 1;
+    client = { ...client, setup_state: 'waiting' };
+    return fulfill(route, { status: 'waiting' });
+  });
+  await page.route('**/v1/setup/resume**', (route) => {
+    resumes += 1;
+    client = { ...client, resume_ready: false, resume_failed: resumes === 1 };
+    if (resumes === 1) return fulfill(route, { resumed: false, error: 'resume_failed' });
+    memoryState = 'updating';
+    client = { ...client, ready: true, reason: 'authenticated' };
+    return fulfill(route, { resumed: true });
+  });
+  const ticketResponse = await page.request.post('http://127.0.0.1:18888/v1/setup/ticket', {
+    headers: { Authorization: 'Bearer browser-test-token' },
+    data: { project_root: '/tmp' },
+  });
+  expect(ticketResponse.ok()).toBe(true);
+  const { ticket } = (await ticketResponse.json()) as { ticket: string };
+  await page.goto(`http://127.0.0.1:18888/setup?ticket=${encodeURIComponent(ticket)}`);
+  await page.getByRole('button', { name: 'Italiano' }).click();
+  await expect(page.locator('#codex').getByRole('button', { name: 'Ricollega', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.locator('#codex').getByRole('button')).toHaveText('Ricollega');
+  expect(logins).toBe(0);
+  expect(resumes).toBe(0);
+  await page.locator('#codex').getByRole('button').click();
+  await expect.poll(() => logins).toBe(1);
+  client = { ...client, setup_state: 'connected', resume_ready: true };
+  await page.reload();
+  await expect.poll(() => resumes).toBe(1);
+  await expect(page.locator('#codex').getByRole('button')).toHaveText('Riprova consolidamento');
+  await page.reload();
+  await expect(page.locator('#codex').getByRole('button')).toHaveText('Riprova consolidamento');
+  expect(resumes).toBe(1);
+  await page.locator('#codex').getByRole('button').click();
+  await expect.poll(() => resumes).toBe(2);
+  await expect(page.locator('#memory')).toContainText('consolidamento');
+  await expect(page.locator('#memory').getByText('Connesso', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'English' }).click();
+  await expect(page.locator('#memory')).toContainText('consolidation');
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test('Work opens first and a connection-required sleep state opens protected Setup', async ({ page }) => {
   const opened = { value: 0 };
   await mockDashboardApi(page, opened);

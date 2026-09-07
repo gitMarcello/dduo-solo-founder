@@ -43,12 +43,14 @@ from dduo_solo_founder.bridge_auth import (
     bridge_token_authorized,
 )
 from dduo_solo_founder.client_readiness import (
+    SubscriptionAuthStatus,
     codex_hook_status,
     detached_cli_environment,
     resolve_codex_executable,
     subscription_auth_status,
 )
-from dduo_solo_founder.client_binding import recovery_state_files
+from dduo_solo_founder.client_binding import binding_from_project, recovery_state_files
+from dduo_solo_founder.client_http import ProjectHttpClient
 from dduo_solo_founder.native_process import client_command
 from dduo_solo_founder.claude_statusline import (
     claude_statusline_installed,
@@ -66,6 +68,7 @@ from dduo_solo_founder.project_secrets import (
     ensure_project_codex_home,
     ensure_project_secret_environment,
     load_project_secrets,
+    project_codex_home,
     save_project_secrets,
 )
 MAX_BODY_BYTES = 4 * 1024 * 1024
@@ -804,6 +807,10 @@ class AuthAttempt:
     process: subprocess.Popen[str] | None = None
     started_at: float = 0.0
     error: str | None = None
+    verified: bool = False
+    resume_attempted: bool = False
+    resume_in_flight: bool = False
+    resume_failed: bool = False
 
 
 class SetupService:
@@ -859,11 +866,14 @@ class SetupService:
             if not fresh and cached and now - cached[0] < AUTH_STATUS_TTL_SECONDS:
                 return cached[1]
             with CLI_PROCESS_LOCK:
-                environment = (
-                    codex_environment(project_id, detached_cli_environment())
-                    if provider == "codex" and project_id
-                    else None
-                )
+                environment = None
+                if provider == "codex" and project_id:
+                    home = project_codex_home(project_id)
+                    if not home.is_dir():
+                        return SubscriptionAuthStatus(
+                            provider, False, "login_required", "codex login"
+                        )
+                    environment = {**detached_cli_environment(), "CODEX_HOME": str(home)}
                 status = (
                     subscription_auth_status(provider, environment=environment)
                     if environment is not None
@@ -915,6 +925,8 @@ class SetupService:
             return {"ready": False}
         try:
             root, project = selected
+            if str(project.get("binding") or "local").lower() != "local":
+                return {"ready": False}
             response = httpx.get(f"http://127.0.0.1:{int(project['api_port'])}/health", timeout=1)
             return {
                 "ready": response.status_code == 200,
@@ -925,6 +937,48 @@ class SetupService:
             }
         except (KeyError, OSError, ValueError, tomllib.TOMLDecodeError, httpx.HTTPError):
             return {"ready": False}
+
+    @staticmethod
+    def _memory_status(root: Path | None) -> dict[str, Any]:
+        """Read existing local jobs without creating a project or contacting a remote."""
+        unknown = {"available": False, "state": "unknown", "providers": {}}
+        selected = SetupService._project_config(root)
+        if selected is None:
+            return {**unknown, "reason": "project_unavailable"}
+        root, project = selected
+        if str(project.get("binding") or "local").strip().lower() != "local":
+            return {**unknown, "reason": "remote_runtime"}
+        try:
+            binding = binding_from_project(root, project)
+            response = httpx.get(
+                f"{binding.api_url}/projects/{binding.project_id}/memory-status",
+                headers=ProjectHttpClient(binding, component="setup").headers(),
+                timeout=2,
+                trust_env=False,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            status = response.json()
+            if not isinstance(status, dict) or status.get("state") not in {
+                "updated", "updating", "waiting", "limited", "connection_required",
+            }:
+                return {**unknown, "reason": "invalid_response"}
+            return status
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError, httpx.HTTPError):
+            return {**unknown, "reason": "api_unavailable"}
+
+    @staticmethod
+    def _provider_auth_required(memory_status: dict[str, Any], provider: str) -> bool:
+        providers = memory_status.get("providers")
+        scoped = providers.get(provider) if isinstance(providers, dict) else None
+        candidates = [scoped] if isinstance(scoped, dict) else []
+        if memory_status.get("provider") == provider:
+            candidates.append(memory_status)
+        return any(
+            status.get("state") == "connection_required"
+            or status.get("error_kind") == "auth_required"
+            for status in candidates
+        )
 
     @staticmethod
     def _backup_status(root: Path | None) -> dict[str, Any]:
@@ -959,17 +1013,52 @@ class SetupService:
                 return "idle"
             if attempt.error:
                 return "failed"
-            if attempt.process and attempt.process.poll() is None:
+            returncode = attempt.process.poll() if attempt.process else None
+            if attempt.process and returncode is None:
                 return "waiting"
+            if returncode not in (None, 0):
+                attempt.error = "login_failed"
+                return "failed"
+            if attempt.verified:
+                return "connected"
             return "checking"
+
+    def _verify_auth_attempt(self, provider: str, project_id: str | None) -> str:
+        state = self._auth_attempt_state(provider, project_id)
+        if state != "checking":
+            return state
+        key = f"{provider}:{project_id}" if project_id else provider
+        with self._lock:
+            attempt = self._auth[key]
+            if attempt.process is None:
+                return state
+            current = self._subscription_status(provider, project_id=project_id, fresh=True)
+            if current.as_dict().get("ready"):
+                attempt.verified = True
+                return "connected"
+            attempt.error = "login_not_verified"
+            return "failed"
 
     def status(self, project_root: str | None = None) -> dict[str, Any]:
         root = Path(project_root).expanduser().resolve() if project_root else None
         project_id = self._project_id(root)
+        memory_status = self._memory_status(root)
         clients = {}
         for provider in ("claude", "codex"):
+            setup_state = self._verify_auth_attempt(provider, project_id)
             client = self._subscription_status(provider, project_id=project_id).as_dict()
-            client["setup_state"] = self._auth_attempt_state(provider, project_id)
+            client["setup_state"] = setup_state
+            with self._lock:
+                attempt = self._auth.get(f"{provider}:{project_id}")
+                is_executor = memory_status.get("executor_provider") == provider
+                client["resume_ready"] = bool(
+                    is_executor and attempt and attempt.verified and not attempt.resume_attempted
+                )
+                client["resume_failed"] = bool(is_executor and attempt and attempt.resume_failed)
+            if self._provider_auth_required(memory_status, provider):
+                client.update(ready=False, reason="auth_required")
+            elif setup_state in {"waiting", "checking", "failed"}:
+                client["ready"] = False
             clients[provider] = client
         hook_status = self._codex_hook_status(root)
         codex_hooks = hook_status.as_dict() if hook_status else None
@@ -980,20 +1069,27 @@ class SetupService:
         infrastructure_ready = (
             docker["ready"] and embeddings_ready and project["ready"]
         )
+        memory_ready = memory_status.get("state") in {"updated", "updating"}
         return {
             "docker": docker,
             "embeddings": {"ready": embeddings_ready},
             "clients": clients,
             "codex_hooks": codex_hooks,
             "project": project,
+            "memory_status": memory_status,
             "backup": backup,
             "claude_telemetry": self.claude_telemetry_status(root),
             "project_root": str(root) if root else "",
             "ready": infrastructure_ready,
             "ready_for_client": {
-                "claude": infrastructure_ready and bool(clients["claude"]["ready"]),
+                "claude": (
+                    infrastructure_ready
+                    and memory_ready
+                    and bool(clients["claude"]["ready"])
+                ),
                 "codex": (
                     infrastructure_ready
+                    and memory_ready
                     and bool(clients["codex"]["ready"])
                     and bool((codex_hooks or {}).get("ready"))
                 ),
@@ -1037,8 +1133,17 @@ class SetupService:
         if provider not in {"claude", "codex"}:
             raise ValueError("Unknown provider")
         project_id = self._project_id(project_root)
+        selected = self._project_config(project_root)
+        if project_root and selected is None:
+            raise ValueError("Initialize this project before connecting a client.")
+        if selected and str(selected[1].get("binding") or "local").lower() != "local":
+            raise ValueError("Reconnect memory on the computer running the remote service.")
+        attempt_key = f"{provider}:{project_id}" if project_id else provider
+        if self._auth_attempt_state(provider, project_id) == "waiting":
+            return {"status": "waiting", "provider": provider}
         current = self._subscription_status(provider, project_id=project_id, fresh=True)
-        if current.ready:
+        memory_status = self._memory_status(selected[0] if selected else None)
+        if current.ready and not self._provider_auth_required(memory_status, provider):
             return {"status": "connected", "provider": provider}
         executable = resolve_codex_executable() if provider == "codex" else shutil.which(provider)
         if not executable:
@@ -1048,23 +1153,23 @@ class SetupService:
             if provider == "codex"
             else [executable, "auth", "login", "--claudeai"]
         )
-        attempt_key = f"{provider}:{project_id}" if project_id else provider
         with self._lock:
             existing = self._auth.get(attempt_key)
             if existing and existing.process and existing.process.poll() is None:
                 return {"status": "waiting", "provider": provider}
             try:
+                environment = detached_cli_environment()
+                if provider == "codex" and project_id:
+                    environment["CODEX_HOME"] = str(
+                        ensure_project_codex_home(project_id, import_global_auth=False)
+                    )
                 process = subprocess.Popen(
                     client_command(command[0], command[1:], client=provider),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
-                    env=(
-                        codex_environment(project_id, detached_cli_environment())
-                        if provider == "codex" and project_id
-                        else detached_cli_environment()
-                    ),
+                    env=environment,
                 )
             except OSError as exc:
                 raise ValueError(f"Could not open {provider.title()} sign-in.") from exc
@@ -1138,24 +1243,50 @@ class SetupService:
             else None,
         }
 
-    @staticmethod
-    def resume_memory(project_root: str, provider: str) -> dict[str, Any]:
+    def resume_memory(self, project_root: str, provider: str) -> dict[str, Any]:
         """Retry only the connected provider's auth-paused jobs after native consent."""
         root = Path(project_root).expanduser().resolve()
         selected = SetupService._project_config(root)
         if provider not in {"claude", "codex"} or selected is None:
             return {"resumed": False}
+        if str(selected[1].get("binding") or "local").lower() != "local":
+            return {"resumed": False, "provider": provider}
+        project_id = str(selected[1]["id"])
+        if self._memory_status(root).get("executor_provider") != provider:
+            return {"resumed": False, "provider": provider}
+        with self._lock:
+            attempt = self._auth.get(f"{provider}:{project_id}")
+            if (
+                attempt is None
+                or self._verify_auth_attempt(provider, project_id) != "connected"
+                or attempt.resume_in_flight
+                or (attempt.resume_attempted and not attempt.resume_failed)
+            ):
+                return {"resumed": False, "provider": provider}
+            # Polling cannot repeat a retry. A failed request can be retried explicitly.
+            attempt.resume_attempted = True
+            attempt.resume_in_flight = True
+            attempt.resume_failed = False
         try:
             _root, project = selected
+            binding = binding_from_project(root, project)
             response = httpx.post(
-                f"http://127.0.0.1:{int(project['api_port'])}/projects/{project['id']}/sleep",
+                f"{binding.api_url}/projects/{binding.project_id}/sleep",
+                headers=ProjectHttpClient(binding, component="setup").headers(),
                 json={"trigger": "session_start", "provider": provider, "resume_auth": True},
                 timeout=10,
+                trust_env=False,
+                follow_redirects=False,
             )
             response.raise_for_status()
             return {"resumed": bool(response.json().get("scheduled")), "provider": provider}
-        except (KeyError, OSError, ValueError, httpx.HTTPError):
-            return {"resumed": False, "provider": provider}
+        except (KeyError, OSError, RuntimeError, ValueError, httpx.HTTPError):
+            with self._lock:
+                attempt.resume_failed = True
+            return {"resumed": False, "provider": provider, "error": "resume_failed"}
+        finally:
+            with self._lock:
+                attempt.resume_in_flight = False
 
     @staticmethod
     def start_docker() -> dict[str, Any]:
@@ -1268,6 +1399,7 @@ def _setup_html() -> str:
                 <div id="hooks" class="system-row"></div>
               </section>
               <section id="project"></section>
+              <section id="memory"></section>
               <section id="backup"></section>
               <section id="recovery" class="hidden"></section>
               <section id="activate" class="hidden"></section>
@@ -1278,7 +1410,7 @@ def _setup_html() -> str:
                 window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
               }
               const headers = { 'Content-Type': 'application/json' };
-              const resumedProviders = new Set();
+              const resumingProviders = new Set();
               let noticeTimer = null;
               let lastSetupState = null;
               let recoveryKey = null;
@@ -1313,11 +1445,23 @@ def _setup_html() -> str:
                   embeddingsKey: 'OpenAI API key',
                   embeddingsSave: 'Save key',
                   embeddingsConnected: 'Embeddings are connected.',
-                  clientReady: 'Ready for memory sleep.',
+                  clientReady: 'Saved subscription sign-in is available.',
+                  clientReconnect: 'Memory consolidation needs a new sign-in. Reconnect in the official window.',
                   clientWaiting: 'Complete the official sign-in window. This page will update automatically.',
                   clientFailed: 'The sign-in window closed before finishing. Open it again when needed.',
                   clientIdle: 'Connect only when this client needs to consolidate memory.',
                   connect: 'Connect',
+                  reconnect: 'Reconnect',
+                  memoryTitle: 'Memory consolidation',
+                  memoryUnknown: 'Consolidation status could not be verified. Check that the project service is running.',
+                  memoryUpdated: 'Memory is up to date.',
+                  memoryUpdating: 'Consolidation is pending. Recovery will be confirmed when it completes.',
+                  memoryConnection: 'Consolidation is paused until you reconnect the affected client.',
+                  memoryWaiting: 'Consolidation is waiting. Check project memory for details.',
+                  memoryResuming: 'Sign-in completed. Memory consolidation has been scheduled; completion is not yet verified.',
+                  memoryResumeFailed: 'Sign-in completed, but consolidation was not scheduled. Check project memory before retrying.',
+                  memoryRetry: 'Retry consolidation',
+                  memoryNoPending: 'Sign-in completed. No additional consolidation was scheduled; check the current memory status.',
                   hooksTitle: 'Codex lifecycle hooks',
                   hooksApproved: 'Approved.',
                   hooksInstructions: 'One native approval is required to save chat turns. If dDuo was just installed or updated, fully quit and reopen Codex first. Then open Settings > Hooks, select dDuo Solo Founder, and choose Review and Trust all.',
@@ -1338,7 +1482,7 @@ def _setup_html() -> str:
                   telemetryRepairAria: 'Repair Claude usage telemetry',
                   telemetryInstalled: 'Claude usage telemetry is installed on this computer.',
                   projectTitle: 'Project memory',
-                  projectReady: '{name} is ready.',
+                  projectReady: 'Local services for {name} are running.',
                   projectWaiting: 'Activate this folder when the required local services are ready.',
                   projectActivateTitle: 'Ready to activate this project',
                   projectActivateDetail: 'Start local memory and open Work.',
@@ -1388,11 +1532,23 @@ def _setup_html() -> str:
                   embeddingsKey: 'Chiave API OpenAI',
                   embeddingsSave: 'Salva chiave',
                   embeddingsConnected: 'Gli embedding sono collegati.',
-                  clientReady: 'Pronto per il consolidamento della memoria.',
+                  clientReady: 'È disponibile un accesso salvato all’abbonamento.',
+                  clientReconnect: 'Il consolidamento richiede un nuovo accesso. Ricollega il client nella finestra ufficiale.',
                   clientWaiting: 'Completa l’accesso nella finestra ufficiale. Questa pagina si aggiornerà automaticamente.',
                   clientFailed: 'La finestra di accesso è stata chiusa prima del termine. Riaprila quando serve.',
                   clientIdle: 'Connetti questo client solo quando deve consolidare la memoria.',
                   connect: 'Connetti',
+                  reconnect: 'Ricollega',
+                  memoryTitle: 'Consolidamento della memoria',
+                  memoryUnknown: 'Non è stato possibile verificare il consolidamento. Controlla che il servizio del progetto sia in esecuzione.',
+                  memoryUpdated: 'La memoria è aggiornata.',
+                  memoryUpdating: 'Il consolidamento è in attesa. Il ripristino sarà confermato al completamento.',
+                  memoryConnection: 'Il consolidamento è sospeso finché non ricolleghi il client interessato.',
+                  memoryWaiting: 'Il consolidamento è in attesa. Controlla la memoria del progetto per i dettagli.',
+                  memoryResuming: 'Accesso completato. Il consolidamento è stato programmato; il completamento non è ancora verificato.',
+                  memoryResumeFailed: 'Accesso completato, ma il consolidamento non è stato programmato. Controlla la memoria del progetto prima di riprovare.',
+                  memoryRetry: 'Riprova consolidamento',
+                  memoryNoPending: 'Accesso completato. Nessun ulteriore consolidamento programmato; verifica lo stato attuale della memoria.',
                   hooksTitle: 'Hook del ciclo di vita Codex',
                   hooksApproved: 'Approvati.',
                   hooksInstructions: 'Serve una sola approvazione nativa per salvare i turni. Se dDuo è stato appena installato o aggiornato, prima chiudi completamente e riapri Codex. Poi apri Impostazioni > Hook, seleziona dDuo Solo Founder e scegli Rivedi e autorizza tutto.',
@@ -1413,7 +1569,7 @@ def _setup_html() -> str:
                   telemetryRepairAria: 'Ripara la telemetria di utilizzo Claude',
                   telemetryInstalled: 'La telemetria di utilizzo Claude è installata su questo computer.',
                   projectTitle: 'Memoria del progetto',
-                  projectReady: '{name} è pronto.',
+                  projectReady: 'I servizi locali di {name} sono in esecuzione.',
                   projectWaiting: 'Attiva questa cartella quando i servizi locali richiesti sono pronti.',
                   projectActivateTitle: 'Il progetto è pronto per l’attivazione',
                   projectActivateDetail: 'Avvia la memoria locale e apri Lavoro.',
@@ -1797,10 +1953,16 @@ def _setup_html() -> str:
               }
 
               async function resumeMemory(provider) {
+                if (resumingProviders.has(provider)) return;
+                resumingProviders.add(provider);
                 try {
-                  await call('/v1/setup/resume', { provider });
-                } catch (_) {
-                  // A project may not be activated yet. Setup remains usable either way.
+                  const result = await call('/v1/setup/resume', { provider });
+                  showNotice(t(result.error ? 'memoryResumeFailed' : result.resumed ? 'memoryResuming' : 'memoryNoPending'));
+                  await refresh(true);
+                } catch (error) {
+                  showNotice(error.message);
+                } finally {
+                  resumingProviders.delete(provider);
                 }
               }
 
@@ -1837,25 +1999,36 @@ def _setup_html() -> str:
                   renderRow(
                     provider,
                     provider === 'claude' ? 'Claude' : 'Codex',
-                    client.ready
-                      ? t('clientReady')
-                      : client.setup_state === 'waiting'
+                    client.resume_failed ? t('memoryResumeFailed') : client.setup_state === 'waiting'
                         ? t('clientWaiting')
                         : client.setup_state === 'failed'
                           ? t('clientFailed')
-                          : t('clientIdle'),
-                    client.ready,
-                    t('connect'),
-                    () => connect(provider),
+                          : client.reason === 'auth_required'
+                            ? t('clientReconnect')
+                            : client.ready ? t('clientReady') : t('clientIdle'),
+                    client.ready && !client.resume_failed,
+                    t(client.resume_failed ? 'memoryRetry' : client.reason === 'auth_required' ? 'reconnect' : 'connect'),
+                    () => client.resume_failed ? resumeMemory(provider) : connect(provider),
                   );
-                  if (client.ready && !resumedProviders.has(provider)) {
-                    resumedProviders.add(provider);
+                  if (client.resume_ready) {
                     void resumeMemory(provider);
                   }
                 }
                 renderHooks(state.codex_hooks);
                 renderClaudeTelemetry(state.claude_telemetry);
                 renderProject(state.project, docker.ready && state.embeddings.ready);
+                const memoryState = state.memory_status?.state || 'unknown';
+                const memoryCopy = {
+                  updated: 'memoryUpdated',
+                  updating: 'memoryUpdating',
+                  connection_required: 'memoryConnection',
+                  waiting: 'memoryWaiting',
+                  limited: 'memoryWaiting',
+                };
+                renderRow(
+                  'memory', t('memoryTitle'), t(memoryCopy[memoryState] || 'memoryUnknown'),
+                  memoryState === 'updated', t('waiting'),
+                );
                 renderBackup(state.backup);
               }
 

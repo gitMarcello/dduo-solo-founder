@@ -794,7 +794,10 @@ def test_setup_reports_project_readiness_and_resumes_only_connected_provider(mon
     monkeypatch.setattr(
         cli_bridge.httpx,
         "get",
-        lambda *args, **kwargs: SimpleNamespace(status_code=200),
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=200, raise_for_status=lambda: None,
+            json=lambda: {"state": "updated", "executor_provider": "claude"},
+        ),
     )
     setup = cli_bridge.SetupService()
     status = setup.status(str(root))
@@ -802,6 +805,10 @@ def test_setup_reports_project_readiness_and_resumes_only_connected_provider(mon
     assert status["ready_for_client"] == {"claude": True, "codex": False}
     assert status["claude_telemetry"]["ready"] is True
     assert status["project"]["dashboard_url"].endswith("?project=p1&tab=tasks")
+    assert setup.resume_memory(str(root), "claude")["resumed"] is False
+    setup._auth["claude:p1"] = cli_bridge.AuthAttempt(
+        provider="claude", process=SimpleNamespace(poll=lambda: 0), verified=True,
+    )
     assert setup.resume_memory(str(root), "claude") == {"resumed": True, "provider": "claude"}
     assert posted[0][1]["json"] == {
         "trigger": "session_start",
