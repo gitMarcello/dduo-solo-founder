@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dduo_solo_founder.client_readiness import codex_hook_status
+from dduo_solo_founder.connection_health import CONFIGURATION_CHOICE_INSTRUCTION
 
 
 @dataclass
@@ -102,8 +103,8 @@ class MemoryConnectionChecks:
                     "a failed check is not proof that permission is missing."
                 )
                 value["response_instruction"] = (
-                    "Before project work, explain this notice briefly in the user's language and "
-                    "ask: fix it now or continue without automatic memory? If fixing, wait for "
+                    CONFIGURATION_CHOICE_INSTRUCTION
+                    + "Offer to guide the user through the Codex permission review in next_action. If fixing, wait for "
                     "'done' then call check_memory_connection. Only after explicit consent to "
                     "continue, pass this warning_id as memory_warning_ack on subsequent dDuo "
                     "calls in THIS chat. Do not repeat an accepted unchanged warning. Never "

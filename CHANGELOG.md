@@ -8,6 +8,9 @@ First distributed Beta for invited developers using Codex or Claude Code.
   consolidation. Setup detects rejected sleep credentials even with a saved
   login, reconnects explicitly without switching accounts, and resumes only
   after verified sign-in; queued work is not presented as completed recovery.
+- Setup, permission, invitation and outage messages recommend the concrete
+  activation or repair first, while preserving an explicit choice to defer.
+  A failed sign-in attempt no longer masks a later explicitly verified login.
 - Project-isolated memory, semantic retrieval and sleep consolidation, with
   observable context delivery and versioned API-equivalent cost estimates.
 - Work management with Plans, Epics, Tasks, Sprints, Backlog and History.

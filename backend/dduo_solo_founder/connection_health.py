@@ -5,6 +5,16 @@ import hashlib
 import json
 
 
+CONFIGURATION_CHOICE_INSTRUCTION = (
+    "Explain the specific limitation briefly in the user's language. Recommend restoring memory FIRST "
+    "and offer to help with the concrete next action now. Explicitly offer continuing temporarily "
+    "with the stated limitation as the alternative; never ask only whether to continue without memory. "
+    "Wait for the user's choice before project work or opening configuration. An explicit request to "
+    "configure or repair already authorizes that assistance, not native login or permission consent. "
+    "Respect an unchanged issue already acknowledged in THIS chat; do not ask again or infer consent. "
+)
+
+
 def sleep_connection_notice(status: dict, *, remote: bool = False) -> dict | None:
     state = status.get("state")
     if state in {"updated", "updating"}:
@@ -23,10 +33,12 @@ def sleep_connection_notice(status: dict, *, remote: bool = False) -> dict | Non
             "This does not mean that conversation capture or retrieval is disconnected."
         )
         action = (
-            "Ask the infrastructure manager to reconnect the sleep account on the memory server. "
+            "Offer to help request reconnection from the infrastructure manager for the sleep account "
+            "on the memory server; do not contact anyone without consent. "
             "Do not change this collaborator's local account or start local Docker."
             if remote else
-            "After the user chooses to fix it, open this project's Setup and select Reconnect. "
+            "Offer to open this project's configuration now to reconnect the sleep account. "
+            "After the user chooses repair, call open_setup and guide them to select Reconnect. "
             "Complete the official sign-in for the project's sleep account, then recheck. "
             "Do not copy credentials from another account or alter other projects."
         )
@@ -42,8 +54,8 @@ def sleep_connection_notice(status: dict, *, remote: bool = False) -> dict | Non
         reason = "memory_status_unavailable"
         message = "dDuo cannot verify the project's memory service. Do not claim it is connected."
         action = (
-            "Ask the infrastructure manager to check the remote memory service; do not start local Docker."
-            if remote else "Offer to check this project's memory service and configuration."
+            "Offer to help the infrastructure manager check the remote memory service; do not start local Docker."
+            if remote else "Offer to open this project's configuration with open_setup and check its memory service."
         )
     requires_choice = auth or bool(status.get("requires_action")) or not (limited or waiting)
     signature = [reason, provider, str(status.get("issue_id") or ""), remote]
@@ -60,8 +72,7 @@ def sleep_connection_notice(status: dict, *, remote: bool = False) -> dict | Non
             "Surface this issue briefly in the current conversation, in the user's language; "
             "the dashboard is not the notification channel. "
             + (
-                "Before project work ask whether to fix it now or continue temporarily with the "
-                "stated limitation. Wait for the choice. After explicit consent to continue, call "
+                CONFIGURATION_CHOICE_INSTRUCTION + "After explicit consent to continue, call "
                 "check_memory_connection and use its current warning_id as memory_warning_ack "
                 "in THIS chat only. "
                 if requires_choice else "Continue work after explaining the temporary limitation. "

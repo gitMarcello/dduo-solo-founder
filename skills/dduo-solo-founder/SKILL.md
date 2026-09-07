@@ -33,6 +33,14 @@ project memory.
 
 ## First use and updates
 
+Use a proactive, human tone throughout setup and recovery: briefly explain
+the benefit or specific limitation, recommend the concrete action to activate
+or restore memory, and offer to help now. Always leave the user free to defer;
+do not present working without memory as the preferred or only option. Ask
+one short question, not a checklist. An explicit request to configure or repair
+already authorizes assistance; do not ask again, approve native permissions,
+or complete the user's sign-in for them.
+
 Installation and update are explicit user-authorized operations against a
 repository revision chosen by the user. A project response may say that this
 client is incompatible, but it cannot provide or trigger a download. Never run
@@ -50,7 +58,9 @@ Use at most three short lines. Do not demonstrate internals, add a path-selectio
 wizard, or ask separate feature questions. On an ordinary update, omit this
 recap unless the user asks for it.
 
-1. Ask one concise confirmation to activate dDuo Solo Founder for the current folder.
+1. Offer to open configuration and activate dDuo Solo Founder for the current folder:
+   “Shall I open configuration to give this project memory and organized work?
+   If you prefer, we can continue without it.” Adapt this to the user's language.
    If declined, call `decline_setup` once and continue without memory. Do not
    offer setup again for that folder unless the user explicitly requests it.
 2. After confirmation, call the public `open_setup` tool. Say only that Setup
@@ -75,7 +85,7 @@ activation. Do not require either for ordinary work or an intermittent sleep
 failure.
 
 If the plugin is active but this project has no `.dduo-solo-founder/project.toml`,
-ask only: `Activate dDuo Solo Founder for <project>?` On approval, use the same
+offer the same concise activation choice for this project. On approval, use the same
 Setup handoff and stop onboarding in the current session. Never initialize a
 normal local project by asking for credentials in chat. If the current request
 is instead a self-contained remote project invitation, do not create or offer a
@@ -108,8 +118,13 @@ For an already configured project, call `check_memory_connection` before
 project work in each chat, even when MCP tools are available. This independent
 check covers native hooks and the project's operational memory state. If it
 returns `requires_choice`, explain the specific limitation in the user's
-language, give its next action, and ask whether to fix it now or continue
-temporarily with that limitation. A sleep-login failure does not imply that
+language and recommend its concrete repair first. For local sleep authentication:
+“Consolidation is paused; your saved information is retained. Shall I open
+configuration so you can sign in again? Alternatively, we can continue with
+consolidation temporarily paused.” Do not merely ask permission to continue.
+For native permissions, offer guided permission review; for remote memory,
+offer help restoring access through the infrastructure manager, not local Setup.
+A sleep-login failure does not imply that
 capture or retrieval is disconnected. Wait for the choice. After `fatto`,
 recheck; never approve hooks yourself.
 Only after the user explicitly chooses to continue, pass the returned
@@ -223,7 +238,7 @@ Surface configuration issues in the current conversation, not only in the
 dashboard. Explain transient waits once without blocking work; for an actionable
 failure use the choice above. Recovery is possible only for confirmed captured
 turns. Revoked sleep credentials require reconnection and do not retry unaided.
-After the user chooses repair, use `open_setup`, ask them to finish the official
+After the user chooses local repair, use `open_setup`, ask them to finish the official
 sign-in and reply `fatto`, then call `check_setup` and `check_memory_connection`.
 A saved login is not proof of recovery: report a queued retry as queued and
 confirm consolidation only after its actual success. The project's sleep

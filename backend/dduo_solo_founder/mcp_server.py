@@ -31,7 +31,11 @@ from dduo_solo_founder.client_support import (
 )
 from dduo_solo_founder.manual_cache import load_verified_manual, store_verified_manual
 from dduo_solo_founder.memory_connection import MemoryConnectionChecks
-from dduo_solo_founder.connection_health import combine_connection_checks, sleep_connection_notice
+from dduo_solo_founder.connection_health import (
+    CONFIGURATION_CHOICE_INSTRUCTION,
+    combine_connection_checks,
+    sleep_connection_notice,
+)
 from dduo_solo_founder.observability import ESTIMATOR_VERSION, estimated_tokens_for_text
 from dduo_solo_founder.operating_contract import HUMAN_WORK_RESPONSE_INSTRUCTION
 from dduo_solo_founder.launcher import get_setup_status as read_setup_status
@@ -887,6 +891,9 @@ def _resolve_tool_runtime(client: str, arguments: dict[str, object]) -> MCPToolR
 def _setup_check(status: dict, provider: str | None) -> dict:
     """Turn private host-agent state into the one action a founder must take next."""
     remaining: list[dict[str, str]] = []
+    health = status.get("memory_status")
+    executor = health.get("executor_provider") if isinstance(health, dict) else None
+    login_provider = executor if executor in {"codex", "claude"} else provider
 
     if not bool((status.get("docker") or {}).get("ready")):
         remaining.append(
@@ -905,18 +912,19 @@ def _setup_check(status: dict, provider: str | None) -> dict:
             }
         )
 
-    if provider:
-        client = (status.get("clients") or {}).get(provider) or {}
+    if login_provider:
+        client = (status.get("clients") or {}).get(login_provider) or {}
         if not bool(client.get("ready")):
             waiting = client.get("setup_state") == "waiting"
+            connect_action = "Reconnect" if client.get("reason") == "auth_required" else "Connect"
             remaining.append(
                 {
-                    "id": f"{provider}_login",
-                    "title": f"Connect {provider.title()}",
+                    "id": f"{login_provider}_login",
+                    "title": f"{connect_action} {login_provider.title()}",
                     "detail": (
-                        f"Complete the official {provider.title()} sign-in already open in Setup."
+                        f"Complete the official {login_provider.title()} sign-in already open in Setup."
                         if waiting
-                        else f"Select Connect for {provider.title()} in Setup and complete the official sign-in."
+                        else f"Select {connect_action} for {login_provider.title()} in Setup and complete the official sign-in."
                     ),
                 }
             )
@@ -955,13 +963,14 @@ def _setup_check(status: dict, provider: str | None) -> dict:
             }
         )
 
-    health = status.get("memory_status")
     issue = sleep_connection_notice(health if isinstance(health, dict) else {"state": "unknown"})
     if issue is not None and bool((status.get("project") or {}).get("ready")):
         remaining.append({"id": issue["reason"], "title": "Check project memory", "detail": issue["message"] + " " + issue["next_action"]})
     ready = not remaining
+    primary_issue = issue is not None and bool(remaining) and remaining[0]["id"] == issue["reason"]
     return {
         "ready": ready,
+        "requires_choice": issue["requires_choice"] if primary_issue else not ready,
         "memory_state": health.get("state") if isinstance(health, dict) else None,
         "provider": provider,
         "next_action": remaining[0] if remaining else None,
@@ -973,10 +982,11 @@ def _setup_check(status: dict, provider: str | None) -> dict:
             "A stored login is not proof of successful consolidation; verify an actual sleep result."
             if ready
             else issue["response_instruction"]
-            if issue is not None and remaining[0]["id"] == issue["reason"]
-            else "Do not claim Setup is complete. State only next_action.detail in the founder's language, call "
-            "open_setup once, then ask the founder to reply 'fatto' when it is complete. Stop and wait for that "
-            "reply."
+            if primary_issue
+            else "Do not claim Setup is complete. " + CONFIGURATION_CHOICE_INSTRUCTION
+            + "Use next_action.detail for the proposed repair. If setup or repair is already requested, "
+            "call open_setup once and guide only that next action; ask the founder to reply 'fatto', "
+            "then verify again. Do not force the user to finish setup if they choose to defer."
         ),
     }
 
@@ -1000,8 +1010,9 @@ def check_setup(project_root: Path | None, provider: str | None) -> dict:
             },
             "remaining_actions": [],
             "response_instruction": (
-                "Do not claim Setup is complete. Explain only that the local Setup check needs to reconnect, call "
-                "open_setup once, and ask the founder to reply 'fatto' when the page has loaded."
+                "Do not claim Setup is complete. " + CONFIGURATION_CHOICE_INSTRUCTION
+                + "Offer to reopen local configuration with open_setup. After consent, open it once "
+                "and ask the founder to reply 'fatto' when the page has loaded."
             ),
         }
 
@@ -1039,8 +1050,10 @@ def _open_remote_setup(binding: ProjectBinding | None) -> dict:
                 ),
             },
             "response_instruction": (
-                "Do not open local Setup or start Docker. Explain only next_action.detail in the "
-                "founder's language and stop so remote access can be restored."
+                "Do not open local Setup or start Docker. " + CONFIGURATION_CHOICE_INSTRUCTION
+                + "Offer help restoring access using the project invitation or requesting a new one "
+                "from the infrastructure manager. Do not contact anyone without consent. "
+                "If deferred, continue project work without remote memory, not by creating a local fallback."
             ),
         }
     return {
@@ -1082,9 +1095,9 @@ def _check_remote_setup(api, binding: ProjectBinding | None, provider: str | Non
             "id": "remote_memory_unavailable",
             "title": "Shared memory is unavailable",
             "detail": (
-                "The shared remote memory cannot be reached right now. Continue without current "
-                "memory, use the last verified operational manual when available, and ask the "
-                "Gestore dell'infrastruttura to check the VPS if the outage persists."
+                "The shared remote memory cannot be reached right now. Offer to help restore access "
+                "with the Gestore dell'infrastruttura. Alternatively the user can choose to work "
+                "without current memory, using the last verified operational manual when available."
             ),
         }
         return {
@@ -1098,9 +1111,8 @@ def _check_remote_setup(api, binding: ProjectBinding | None, provider: str | Non
             "next_action": action,
             "remaining_actions": [action],
             "response_instruction": (
-                "Do not open local Setup or start Docker. State only next_action.detail in the "
-                "founder's language. Ask whether to repair it or continue without current memory; "
-                "wait for the choice."
+                "Do not open local Setup or start Docker. " + CONFIGURATION_CHOICE_INSTRUCTION
+                + "Use next_action.detail; do not contact anyone without consent."
             ),
         }
     try:
@@ -1189,9 +1201,19 @@ def call(
         if remote_setup and remote_binding is None:
             return _open_remote_setup(None)
         if not project_id:
+            from dduo_solo_founder.project_activation import setup_declined
+            if project_root is not None and setup_declined(project_root):
+                return {
+                    "status": "declined",
+                    "instruction": "Memory is not active for this folder by the user's choice. Do not offer setup again unless explicitly requested.",
+                }
             return {
                 "status": "unconfigured",
-                "instruction": "Ask for one activation confirmation, then use open_setup.",
+                "instruction": (
+                    "Briefly offer to open configuration to give this project memory and organized Work, "
+                    "with continuing without memory as the explicit alternative. After consent, use open_setup; "
+                    "if declined, use decline_setup once and do not offer again unless explicitly requested."
+                ),
             }
         return request(api, "GET", "/health")
     if name == "open_setup":
@@ -1570,8 +1592,16 @@ def _safe_tool_error(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         return f"dDuo memory returned HTTP {exc.response.status_code}"
     if isinstance(exc, httpx.RequestError):
-        return "dDuo memory is currently unavailable; continue without memory"
-    return "dDuo could not complete this memory operation; continue without memory"
+        return (
+            "dDuo memory is currently unavailable. Offer to check_memory_connection to identify the "
+            "repair first; alternatively the user can continue temporarily without memory. "
+            "Respect a choice already made in this chat; do not start local Setup for remote memory."
+        )
+    return (
+        "dDuo could not complete this memory operation. Explain the failed operation without assuming "
+        "that all memory is disconnected. Offer a targeted check first, or let the user defer it. "
+        "Do not blindly retry a mutation whose outcome is unknown."
+    )
 
 
 def _invoke_mcp_tool(
@@ -1619,9 +1649,17 @@ def _connection_notice(
     if name in _CONNECTION_EXEMPT_TOOLS and name != "check_memory_connection":
         return None
     if not runtime.project_id:
+        from dduo_solo_founder.project_activation import setup_declined
+        declined = runtime.project_root is not None and setup_declined(runtime.project_root)
         return (
-            {"ready": None, "reason": "unconfigured", "requires_choice": False,
-             "response_instruction": "Follow normal project activation; do not claim memory is active."}
+            {"ready": None, "reason": "declined" if declined else "unconfigured", "requires_choice": False,
+             "response_instruction": (
+                 "Respect the user's choice: do not offer setup again unless explicitly requested."
+                 if declined else
+                 "Offer to open configuration to give this project memory and organized Work; "
+                 "explicitly offer continuing without it as the alternative. Wait for consent. "
+                 "Do not claim memory is active."
+             )}
             if name == "check_memory_connection" else None
         )
     checked = _MEMORY_CONNECTION_CHECKS.check(
@@ -1725,9 +1763,11 @@ def create_mcp_server() -> Server:
             "Use dDuo only from Codex or Claude Code. Every tool call is bound to the "
             "current project root and never falls back to another project. Before project "
             "work in each chat call check_memory_connection once, even if MCP tools work. "
-            "If automatic memory needs attention, briefly explain in the user's language "
-            "and ask whether to fix it now or continue without automatic memory. Wait for "
-            "that choice; do not claim capture is active just because MCP is connected. "
+            "If automatic memory needs attention, recommend the specific repair FIRST: offer "
+            "open_setup for local sign-in, guided native permission review, or remote repair "
+            "through the infrastructure manager. Explicitly offer continuing with the stated "
+            "limitation as the alternative, never as the only question. Wait for the choice; "
+            "do not claim capture is active just because MCP is connected. "
             "On 'done', recheck. After explicit consent to continue, use the returned "
             "warning_id as memory_warning_ack on calls in this chat only; ask again only "
             "for a changed warning. If the user declines dDuo for this project, do not activate it."

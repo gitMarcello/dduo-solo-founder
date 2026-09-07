@@ -158,7 +158,7 @@ def invitation_setup_prompt(
     if language == "en":
         return f"""You received access to the shared memory identified by this dDuo invitation.
 Work only inside the project's authorized Git checkout. If you cannot access it, stop and ask
-the Infrastructure manager for repository access.
+the user to obtain repository access from the Infrastructure manager.
 
 Install or update dDuo Solo Founder from the official repository using exactly the immutable
 release {release_tag}:
@@ -174,14 +174,20 @@ Then have the assistant open the authenticated dashboard:
 dduo-solo-founder dashboard --tab tasks --project-root .
 
 The opaque descriptor contains an expiring one-time invitation. Never reveal its decoded
-contents, ask for SSH or VPS credentials, or start a replacement local Docker stack. If memory
-is unavailable, continue without it using only the last verified project manual. After an
-installation, update or first activation, open a new chat or session from the same project root.
+contents, ask for SSH or VPS credentials, open local Setup, or start a replacement local Docker
+stack. If memory is unavailable, recommend restoring the remote connection and offer to check
+it. Offer continuing temporarily without current memory as an explicit alternative, using the
+last verified project manual when available. Wait for the user's choice unless already given
+in this chat; do not repeat an unchanged warning after they choose to continue. If help from
+the Infrastructure manager is needed, explain the next step without contacting them unless
+the user authorizes it.
+
+After an installation, update or first activation, open a new chat or session from the same project root.
 After installing or updating Codex, fully quit and reopen Codex first: a new chat alone does not
 reload hooks, skills or MCP. With Claude, a new session is sufficient."""
     return f"""Hai ricevuto accesso alla memoria condivisa indicata da questo invito dDuo.
 Lavora esclusivamente dentro il repository Git autorizzato del progetto. Se non riesci ad
-accedervi, fermati e chiedi l'accesso al Gestore dell'infrastruttura.
+accedervi, fermati e chiedi all'utente di ottenere l'accesso dal Gestore dell'infrastruttura.
 
 Installa o aggiorna dDuo Solo Founder dal repository ufficiale usando esattamente
 la release immutabile {release_tag}:
@@ -197,9 +203,15 @@ Subito dopo fai aprire all'assistente la dashboard autenticata:
 dduo-solo-founder dashboard --tab tasks --project-root .
 
 Il descriptor opaco contiene un invito monouso e scade. Non mostrarne il contenuto decodificato,
-non chiedere credenziali SSH o VPS e non avviare un Docker locale sostitutivo. Se la memoria non
-è raggiungibile, continua senza memoria usando soltanto l'ultima copia verificata del Manuale
-operativo. Dopo installazione, aggiornamento o prima attivazione, chiedi all'utente di aprire una
+non chiedere credenziali SSH o VPS, non aprire Setup locale e non avviare un Docker locale
+sostitutivo. Se la memoria non è raggiungibile, consiglia di ripristinare la connessione remota
+e proponi di verificarla. Offri come alternativa esplicita di proseguire temporaneamente senza
+memoria aggiornata, usando l'ultima copia verificata del Manuale operativo se disponibile.
+Attendi la scelta dell'utente, salvo che l'abbia già espressa in questa chat; se sceglie di
+proseguire, non ripetere lo stesso avviso. Se serve il Gestore dell'infrastruttura, spiega il
+prossimo passo senza contattarlo, a meno che l'utente lo autorizzi.
+
+Dopo installazione, aggiornamento o prima attivazione, chiedi all'utente di aprire una
 nuova chat o sessione nella stessa root. Se hai installato o aggiornato Codex, chiedi prima di
 chiudere e riaprire completamente Codex: una nuova chat da sola non ricarica hook, skill e MCP.
 Con Claude è sufficiente una nuova sessione."""

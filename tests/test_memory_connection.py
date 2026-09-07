@@ -555,8 +555,14 @@ async def test_sdk_sleep_auth_failure_requires_choice_even_with_approved_hooks(
         assert first["reason"] == "sleep_auth_required"
         assert "Saved turns" in first["message"]
         assert "current conversation" in first["response_instruction"]
+        assert memory_connection.CONFIGURATION_CHOICE_INSTRUCTION in first["response_instruction"]
         assert ("infrastructure manager" in first["next_action"]) is remote
+        assert ("call open_setup" in first["next_action"]) is not remote
         assert sdk_runtime.calls == []
+        # Choosing repair can open configuration; it does not acknowledge or
+        # silently execute the original Work operation.
+        assert _payload(await session.call_tool("open_setup", arguments))["executed"] == "open_setup"
+        assert _payload(await session.call_tool("list_tasks", arguments))["tool_executed"] is False
         checked = _payload(await session.call_tool("check_memory_connection", arguments))
         assert checked["warning_id"] == first["warning_id"]
         ack = {**arguments, "memory_warning_ack": first["warning_id"]}
@@ -570,4 +576,4 @@ async def test_sdk_sleep_auth_failure_requires_choice_even_with_approved_hooks(
         assert _payload(await session.call_tool("list_tasks", arguments))["executed"] == "list_tasks"
 
     await _sdk_session(client_name, sequence)
-    assert len(sdk_runtime.calls) == 2
+    assert [call[0] for call in sdk_runtime.calls] == ["open_setup", "list_tasks", "list_tasks"]

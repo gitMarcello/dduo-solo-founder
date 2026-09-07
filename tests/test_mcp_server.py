@@ -1135,6 +1135,54 @@ def test_decline_setup_requires_explicit_unconfigured_root(monkeypatch, tmp_path
     assert calls == [tmp_path]
 
 
+def test_health_respects_decline_but_explicit_setup_remains_available(monkeypatch, tmp_path):
+    from dduo_solo_founder import project_activation
+
+    monkeypatch.setattr(project_activation, "ACTIVATION_DIR", tmp_path / "private-preferences")
+    opened = []
+    monkeypatch.setattr(mcp_server, "open_setup", opened.append)
+    assert mcp_server.call("health", {}, None, "", project_root=tmp_path)["status"] == "unconfigured"
+    mcp_server.call("decline_setup", {}, None, "", project_root=tmp_path)
+    assert mcp_server.call("health", {}, None, "", project_root=tmp_path)["status"] == "declined"
+    runtime = SimpleNamespace(project_id=None, project_root=tmp_path)
+    checked = mcp_server._connection_notice("check_memory_connection", runtime, None)
+    assert checked["reason"] == "declined" and checked["requires_choice"] is False
+    assert opened == []
+    assert mcp_server.call("open_setup", {}, None, "", project_root=tmp_path)["opened"] is True
+    assert opened == [tmp_path]
+
+
+def test_setup_rejected_login_offers_reconnect_without_opening_browser(monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(mcp_server, "open_setup", opened.append)
+    monkeypatch.setattr(mcp_server, "read_setup_status", lambda root: {
+        "docker": {"ready": True}, "embeddings": {"ready": True},
+        "project": {"ready": True}, "codex_hooks": {"ready": True},
+        "clients": {"codex": {"ready": False, "reason": "auth_required"}},
+        "memory_status": {"state": "connection_required", "provider": "codex"},
+    })
+    checked = mcp_server.check_setup(tmp_path, "codex")
+    assert checked["ready"] is False and checked["requires_choice"] is True
+    assert checked["next_action"]["id"] == "codex_login"
+    assert checked["next_action"]["title"] == "Reconnect Codex"
+    assert mcp_server.CONFIGURATION_CHOICE_INSTRUCTION in checked["response_instruction"]
+    assert opened == []
+
+
+def test_claude_chat_repairs_project_sleep_executor_not_its_interactive_client():
+    state = {
+        "docker": {"ready": True}, "embeddings": {"ready": True}, "project": {"ready": True},
+        "clients": {"claude": {"ready": False}, "codex": {"ready": False, "reason": "auth_required"}},
+        "memory_status": {"state": "connection_required", "provider": "codex", "executor_provider": "codex"},
+    }
+    checked = mcp_server._setup_check(state, "claude")
+    assert checked["next_action"]["id"] == "codex_login"
+    assert not any(item["id"] == "claude_login" for item in checked["remaining_actions"])
+    state["clients"]["codex"] = {"ready": True}
+    state["memory_status"] = {"state": "updated", "executor_provider": "codex"}
+    assert mcp_server._setup_check(state, "claude")["ready"] is True
+
+
 def test_activate_plan_context_loads_any_existing_plan(monkeypatch):
     paths = []
 

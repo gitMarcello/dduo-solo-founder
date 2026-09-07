@@ -73,6 +73,11 @@ def test_bundle_is_canonical_opaque_and_self_contained():
     assert "Con Claude è sufficiente una nuova sessione" in prompt
     assert "checkout temporaneo esterno al progetto" in prompt
     assert "Dalla root del progetto" in prompt
+    assert prompt.index("ripristinare la connessione remota") < prompt.index("alternativa esplicita")
+    assert "Attendi la scelta dell'utente" in prompt
+    assert "non ripetere lo stesso avviso" in prompt
+    assert "senza contattarlo" in prompt
+    assert "non aprire Setup locale" in prompt
 
 
 def test_prompt_uses_the_requested_language_and_server_release():
@@ -95,6 +100,11 @@ def test_prompt_uses_the_requested_language_and_server_release():
     assert "fully quit and reopen Codex" in prompt
     assert "With Claude, a new session is sufficient" in prompt
     assert "temporary checkout outside the project" in prompt
+    assert prompt.index("restoring the remote connection") < prompt.index("explicit alternative")
+    assert "Wait for the user's choice unless already given" in prompt
+    assert "do not repeat an unchanged warning" in prompt
+    assert "without contacting them unless" in prompt
+    assert "open local Setup" in prompt
 
 
 @pytest.mark.parametrize(

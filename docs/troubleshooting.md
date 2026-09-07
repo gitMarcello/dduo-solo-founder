@@ -31,7 +31,11 @@ not a technical lock on the entire coding agent.
 
 ## Setup did not finish
 
-Open the **Setup** tab in the local dashboard and select **Open setup**. The
+Ask the assistant to finish configuration: it offers to open Setup and guides
+the next necessary action. You can explicitly defer; it will not keep asking
+about the same accepted limitation. On first use it recommends activating
+project memory and Work, with continuing without memory as the alternative.
+If you prefer the dashboard, select **Setup > Open setup**. The
 page reports only the relevant prerequisite: Docker Desktop, the embeddings
 key, a provider connection, Codex hook permission, or project activation.
 
@@ -78,8 +82,9 @@ instead of creating a new identity with `init`.
 The project-owned sleep account needs reconnecting. Changing the account in
 Codex does not replace this isolated login; a saved login can still be revoked.
 Setup now checks actual sleep failures as well as saved credentials. The plugin
-reports the problem **in the current chat** and asks whether to fix it or continue
-temporarily. Existing memories and captured turns are retained; a paused sleep
+reports the problem **in the current chat**, recommends opening configuration
+to reconnect, and explicitly offers continuing temporarily as the alternative.
+Existing memories and captured turns are retained; a paused sleep
 does not by itself mean that capture or retrieval has stopped.
 
 After choosing to fix it, select **Reconnect** in Setup and complete official

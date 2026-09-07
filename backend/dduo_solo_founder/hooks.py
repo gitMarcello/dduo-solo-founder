@@ -41,7 +41,7 @@ from dduo_solo_founder.observability import (
     estimated_tokens_for_text,
 )
 from dduo_solo_founder.operating_contract import COFOUNDER_CONTRACT, TASK_CONTRACT
-from dduo_solo_founder.connection_health import sleep_connection_notice
+from dduo_solo_founder.connection_health import CONFIGURATION_CHOICE_INSTRUCTION, sleep_connection_notice
 from dduo_solo_founder.project_activation import setup_declined
 from dduo_solo_founder.project_config import (
     dashboard_item_url,
@@ -1759,7 +1759,7 @@ def compose_remote_offline_context(
         return None
     if include_manual:
         notice = (
-            "dDuo remote memory is temporarily unavailable. Continue with this last verified "
+            "dDuo remote memory is temporarily unavailable. If the user chooses to continue, use this last verified "
             f"project operating manual (version {manual['version']}); current memories and Work "
             "state may be stale or absent. Do not start a local dDuo stack for this remote-bound "
             "project."
@@ -1767,12 +1767,16 @@ def compose_remote_offline_context(
         context = {"operational_manual": manual}
     else:
         notice = (
-            "dDuo remote memory is temporarily unavailable. Continue with the operating manual "
+            "dDuo remote memory is temporarily unavailable. If the user chooses to continue, use the operating manual "
             "and stable project context already present in this live session; current memories "
             "and Work state may be stale or absent. Do not start a local dDuo stack for this "
             "remote-bound project."
         )
         context = {}
+    notice += (
+        " Offer help restoring remote access with the infrastructure manager, without contacting anyone "
+        "or changing credentials without consent. " + CONFIGURATION_CHOICE_INSTRUCTION
+    )
     return compose_founder_context(
         context,
         contracts=contracts,
@@ -2086,8 +2090,9 @@ def session_start() -> None:
     # reuse the event already staged in the local state file.
     occurrence_id = uuid.uuid4().hex
     fallback_message = (
-        "dDuo Solo Founder memory is temporarily unavailable. Continue working normally; ask once whether "
-        "the founder wants it repaired."
+        "dDuo Solo Founder memory is temporarily unavailable. Offer to check_memory_connection "
+        "and help restore this project's memory; do not start local Setup for a remote binding. "
+        + CONFIGURATION_CHOICE_INSTRUCTION
     )
     fallback_composed = compose_unavailable_context(fallback_message)
     fallback_context = fallback_composed.content
@@ -2102,7 +2107,9 @@ def session_start() -> None:
         emit(
             f"dDuo Solo Founder is available for {root.name}. If the current request is a self-contained "
             "remote project invitation, follow that invitation and never initialize a local fallback. Otherwise ask "
-            "one concise question: activate dDuo Solo Founder locally for this folder? "
+            "one concise question in the user's language, recommending setup first: Shall I open configuration "
+            "to activate dDuo Solo Founder locally for this folder, giving it memory and organized Work? "
+            "Alternatively we can continue without memory. An explicit activation request already authorizes setup. "
             "If declined, call decline_setup once and continue without memory or repeated setup questions. "
             "After approval, say that dDuo Setup is opening and ask the founder to complete only the actions shown "
             "there, then reply 'fatto' so you can verify it. Call open_setup without showing commands, URLs, or "
@@ -2412,8 +2419,10 @@ def user_prompt_submit() -> None:
         prompt=prompt,
     )
     fallback_message = (
-        "dDuo could not reach local memory for this turn. Continue normally; this turn is "
-        "queued locally and will be recovered automatically."
+        "dDuo could not reach memory for this turn. This turn is queued locally for a recovery attempt, "
+        "not confirmed as saved on the server. Offer check_memory_connection and help restoring the "
+        "project's connection; never start a local fallback for remote memory. "
+        + CONFIGURATION_CHOICE_INSTRUCTION
     )
     fallback_composed = compose_unavailable_context(fallback_message)
     fallback_context = fallback_composed.content
@@ -2789,8 +2798,10 @@ def user_prompt_submit() -> None:
             pass
         if not spool_persisted and fallback_context == compose_unavailable_context(fallback_message).content:
             fallback_context = compose_unavailable_context(
-                "dDuo memory is unavailable for this turn. Continue normally. "
-                "Local recovery could not be confirmed; this turn may not be saved in memory."
+                "dDuo memory is unavailable for this turn. Offer check_memory_connection and help "
+                "restoring the project's connection; do not start local Setup for a remote binding. "
+                "Local recovery could not be confirmed; this turn may not be saved in memory. "
+                + CONFIGURATION_CHOICE_INSTRUCTION
             ).content
             # Do not attribute the abandoned, un-emitted fallback to this turn.
             fallback_observation = None

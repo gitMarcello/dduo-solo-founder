@@ -81,6 +81,37 @@ def test_failed_or_unverified_login_never_resumes(setup_case, exit_code, ready):
     assert c.posted == []
 
 
+@pytest.mark.parametrize("error", ["login_failed", "login_not_verified"])
+def test_explicit_reconnect_retires_failed_attempt_after_fresh_native_verification(setup_case, error):
+    c = setup_case
+    c.health.update(state="updated", provider=None)
+    c.setup._auth["codex:p1"] = cli_bridge.AuthAttempt("codex", error=error)
+    checks = []
+    c.setup._subscription_status = lambda *a, **kwargs: checks.append(kwargs) or c.auth
+
+    # Polling cannot silently retire the failed attempt or grant retry consent.
+    assert c.setup.status(str(c.root))["clients"]["codex"]["setup_state"] == "failed"
+    checks.clear()
+    assert c.setup.start_auth("codex", str(c.root))["status"] == "connected"
+    assert checks == [{"project_id": "p1", "fresh": True}]
+    state = c.setup.status(str(c.root))["clients"]["codex"]
+    assert state["setup_state"] == "idle"
+    assert state["ready"] is True
+    assert state["resume_ready"] is False
+    assert c.setup.resume_memory(str(c.root), "codex")["resumed"] is False
+    assert c.launched == c.posted == c.homes == []
+
+
+def test_failed_attempt_with_server_auth_rejection_requires_new_sign_in(setup_case):
+    c = setup_case
+    c.setup._auth["codex:p1"] = cli_bridge.AuthAttempt("codex", error="login_failed")
+    assert c.setup.start_auth("codex", str(c.root))["status"] == "waiting"
+    assert len(c.launched) == 1
+    assert c.setup.status(str(c.root))["clients"]["codex"]["resume_ready"] is False
+    assert c.setup.resume_memory(str(c.root), "codex")["resumed"] is False
+    assert c.posted == []
+
+
 def test_resume_is_executor_scoped_and_offline_retry_requires_explicit_action(setup_case, monkeypatch):
     c = setup_case
     for provider in ("claude", "codex"):
@@ -96,6 +127,31 @@ def test_resume_is_executor_scoped_and_offline_retry_requires_explicit_action(se
     monkeypatch.setattr(cli_bridge.httpx, "post", original_post)
     assert c.setup.resume_memory(str(c.root), "codex")["resumed"] is True
     assert len(c.posted) == 1
+
+
+@pytest.mark.parametrize("payload", [None, []])
+def test_invalid_resume_response_allows_explicit_retry_without_polling_retry(setup_case, monkeypatch, payload):
+    c = setup_case
+    c.setup._auth["codex:p1"] = cli_bridge.AuthAttempt("codex", verified=True)
+    original_post = cli_bridge.httpx.post
+    invalid_posts = []
+    monkeypatch.setattr(
+        cli_bridge.httpx,
+        "post",
+        lambda url, **kwargs: invalid_posts.append((url, kwargs))
+        or httpx.Response(202, json=payload, request=httpx.Request("POST", url)),
+    )
+    assert c.setup.resume_memory(str(c.root), "codex")["error"] == "resume_failed"
+    for _ in range(2):
+        state = c.setup.status(str(c.root))["clients"]["codex"]
+        assert state["resume_ready"] is False
+        assert state["resume_failed"] is True
+    assert len(invalid_posts) == 1
+    monkeypatch.setattr(cli_bridge.httpx, "post", original_post)
+    assert c.setup.resume_memory(str(c.root), "codex")["resumed"] is True
+    assert len(c.posted) == 1
+    assert c.setup.status(str(c.root))["clients"]["codex"]["resume_failed"] is False
+    assert c.launched == c.homes == []
 
 
 def test_remote_setup_cannot_reconnect_or_resume_local_executor(setup_case, monkeypatch):

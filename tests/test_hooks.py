@@ -286,8 +286,8 @@ def test_session_start_surfaces_expired_auth_before_opening_setup(monkeypatch, t
     hooks.session_start()
     assert telemetry_flushes == ["p1"]
     context = json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
-    assert "Before project work ask whether to fix it now" in context
-    assert "After the user chooses to fix it" in context
+    assert hooks.CONFIGURATION_CHOICE_INSTRUCTION in context
+    assert "call open_setup" in context
     assert "what this project is for" in context
     assert "smallest useful Plan, Epic, or Task structure" in context
     assert ["dduo-solo-founder", "setup", "--project-root", str(tmp_path)] not in calls
@@ -1515,7 +1515,7 @@ def test_hook_recovery_paths_cover_tty_setup_failures_and_provider_notice_cleanu
     output = hook_input(monkeypatch, {"cwd": str(tmp_path), "client": "claude", "prompt": "Resume"})
     hooks.user_prompt_submit()
     rendered = json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
-    assert "Before project work ask whether to fix it now" in rendered
+    assert hooks.CONFIGURATION_CHOICE_INSTRUCTION in rendered
     assert "A local Setup page opened" not in rendered
 
 

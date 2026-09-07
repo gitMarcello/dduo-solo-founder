@@ -1144,6 +1144,12 @@ class SetupService:
         current = self._subscription_status(provider, project_id=project_id, fresh=True)
         memory_status = self._memory_status(selected[0] if selected else None)
         if current.ready and not self._provider_auth_required(memory_status, provider):
+            with self._lock:
+                previous = self._auth.get(attempt_key)
+                if previous is not None and previous.error:
+                    # Explicit reconnect freshly verified the saved login. Retire
+                    # the failed attempt without authorizing a consolidation retry.
+                    self._auth.pop(attempt_key)
             return {"status": "connected", "provider": provider}
         executable = resolve_codex_executable() if provider == "codex" else shutil.which(provider)
         if not executable:
@@ -1279,7 +1285,10 @@ class SetupService:
                 follow_redirects=False,
             )
             response.raise_for_status()
-            return {"resumed": bool(response.json().get("scheduled")), "provider": provider}
+            result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError("Invalid consolidation resume response.")
+            return {"resumed": bool(result.get("scheduled")), "provider": provider}
         except (KeyError, OSError, RuntimeError, ValueError, httpx.HTTPError):
             with self._lock:
                 attempt.resume_failed = True

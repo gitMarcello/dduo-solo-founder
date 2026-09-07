@@ -32,7 +32,11 @@ blocco tecnico dell'intero agente di sviluppo.
 <a id="setup-did-not-finish"></a>
 ## Setup non è terminato
 
-Apri la scheda **Setup** nella dashboard locale e scegli **Apri Setup**. La
+Chiedi all'assistente di completare la configurazione: propone di aprirla e ti
+guida nella prossima azione necessaria. Puoi rimandare esplicitamente: non
+insisterà sullo stesso problema già accettato. Al primo avvio consiglia di
+attivare memoria e gestione del lavoro, lasciando l'alternativa di farne a meno.
+Se preferisci la dashboard, scegli **Setup > Apri Setup**. La
 pagina indica il prerequisito pertinente: Docker Desktop, chiave embedding,
 connessione del provider, permesso hook Codex o attivazione del progetto.
 
@@ -81,7 +85,8 @@ senza creare una nuova identità con `init`.
 L'account del sonno richiede un nuovo accesso. Cambiare account nell'app Codex
 non sostituisce questo login isolato: un accesso salvato può essere revocato.
 Setup verifica anche gli errori effettivi del sonno. Il plugin avvisa **nella
-chat corrente** e chiede se risolvere o continuare temporaneamente. Memorie e
+chat corrente**, propone prima di aprire la configurazione per ricollegarti e
+lascia esplicitamente l'alternativa di continuare temporaneamente. Memorie e
 turni acquisiti restano salvati; il sonno fermo non significa, da solo, che
 anche salvataggio e recupero siano interrotti.
 

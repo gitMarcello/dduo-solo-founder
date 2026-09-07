@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from .client_support import client_family
+from .connection_health import CONFIGURATION_CHOICE_INSTRUCTION
 
 
 # UserPromptSubmit may spend the full 30 seconds in its bounded HTTP request.
@@ -51,8 +52,9 @@ def _hook_fallback(event: str) -> bytes:
                 "hookSpecificOutput": {
                     "hookEventName": event_name,
                     "additionalContext": (
-                        "dDuo project memory is temporarily unavailable. Continue normally; "
-                        "do not claim this turn was recorded."
+                        "dDuo project memory is temporarily unavailable; do not claim this turn was recorded. "
+                        "Offer to check the plugin connection and help repair it; do not start local Setup "
+                        "or Docker for a remote project. " + CONFIGURATION_CHOICE_INSTRUCTION
                     ),
                 }
             },
