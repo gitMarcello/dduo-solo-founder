@@ -1,0 +1,150 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://dduo_solo_founder:${DDUO_DATABASE_PASSWORD:-dduo_solo_founder}@postgres:5432/dduo_solo_founder
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-large}
+      EMBEDDING_INDEX_VERSION: ${EMBEDDING_INDEX_VERSION:-v2}
+      TASK_EMBEDDING_INDEX_VERSION: ${TASK_EMBEDDING_INDEX_VERSION:-v1}
+      TASK_INDEX_MAX_CHARACTERS: ${TASK_INDEX_MAX_CHARACTERS:-16000}
+      TASK_INDEX_MAX_UTF8_BYTES: ${TASK_INDEX_MAX_UTF8_BYTES:-7500}
+      TASK_RETRIEVAL_SIMILARITY_THRESHOLD: ${TASK_RETRIEVAL_SIMILARITY_THRESHOLD:-0.35}
+      COLLECTION_PREFIX: ${COLLECTION_PREFIX:-dduo_solo_founder}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CLI_BRIDGE_URL: ${DDUO_CLI_BRIDGE_URL:-http://host.docker.internal:0}
+      CLI_BRIDGE_TOKEN: ${DDUO_CLI_BRIDGE_TOKEN:-}
+      RETRIEVAL_SIMILARITY_THRESHOLD: ${RETRIEVAL_SIMILARITY_THRESHOLD:-0.5}
+      RETRIEVAL_EPISODE_LIMIT: ${RETRIEVAL_EPISODE_LIMIT:-3}
+      RETRIEVAL_FACT_LIMIT: ${RETRIEVAL_FACT_LIMIT:-4}
+      RETRIEVAL_HEURISTIC_LIMIT: ${RETRIEVAL_HEURISTIC_LIMIT:-4}
+      SLEEP_IDLE_SECONDS: ${SLEEP_IDLE_SECONDS:-1200}
+      SLEEP_TURN_THRESHOLD: ${SLEEP_TURN_THRESHOLD:-8}
+      SLEEP_BATCH_SIZE: ${SLEEP_BATCH_SIZE:-8}
+      SLEEP_BATCH_CHAR_LIMIT: ${SLEEP_BATCH_CHAR_LIMIT:-40000}
+      SLEEP_POLL_SECONDS: ${SLEEP_POLL_SECONDS:-2.0}
+      SLEEP_CLI_TIMEOUT_SECONDS: ${SLEEP_CLI_TIMEOUT_SECONDS:-900}
+      ARTIFACT_MAX_BYTES: ${ARTIFACT_MAX_BYTES:-10485760}
+      BACKUP_CONFIGURED: ${DDUO_SOLO_FOUNDER_BACKUP_CONFIGURED:-false}
+      BACKUP_DIRECTORY: /backups
+      BACKUP_KEY_FILE: /run/secrets/dduo-backup-key
+      PROJECT_CONFIG_FILE: /project-config/project.toml
+      BACKUP_INCLUDE_QDRANT: ${DDUO_SOLO_FOUNDER_BACKUP_INCLUDE_QDRANT:-true}
+      BACKUP_RETENTION_DAILY: ${DDUO_SOLO_FOUNDER_BACKUP_RETENTION_DAILY:-7}
+      BACKUP_RETENTION_WEEKLY: ${DDUO_SOLO_FOUNDER_BACKUP_RETENTION_WEEKLY:-4}
+      BACKUP_RETENTION_MONTHLY: ${DDUO_SOLO_FOUNDER_BACKUP_RETENTION_MONTHLY:-6}
+      BACKUP_AUTO_SECONDS: ${BACKUP_AUTO_SECONDS:-300}
+      BACKUP_CONFIGURATION_ERROR: ${DDUO_SOLO_FOUNDER_BACKUP_CONFIGURATION_ERROR:-}
+      BACKUP_PROJECT_ID: ${DDUO_SOLO_FOUNDER_PROJECT_ID:-}
+      DDUO_NODE_ID: ${DDUO_NODE_ID:-}
+      DDUO_NODE_AUTHORITY_SECRET: ${DDUO_NODE_AUTHORITY_SECRET:-}
+    ports:
+      - "127.0.0.1:${DDUO_SOLO_FOUNDER_API_PORT:-8765}:8000"
+    volumes:
+      - model-cache:/root/.cache
+      - type: bind
+        source: ${DDUO_SOLO_FOUNDER_BACKUP_SOURCE:-.}
+        target: /backups
+      - type: bind
+        source: ${DDUO_SOLO_FOUNDER_BACKUP_KEY_SOURCE:-.env.example}
+        target: /run/secrets/dduo-backup-key
+        read_only: true
+      - type: bind
+        source: ${DDUO_SOLO_FOUNDER_PROJECT_CONFIG_SOURCE:-.env.example}
+        target: /project-config/project.toml
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    command: ["python", "-m", "dduo_solo_founder.worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://dduo_solo_founder:${DDUO_DATABASE_PASSWORD:-dduo_solo_founder}@postgres:5432/dduo_solo_founder
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-large}
+      EMBEDDING_INDEX_VERSION: ${EMBEDDING_INDEX_VERSION:-v2}
+      TASK_EMBEDDING_INDEX_VERSION: ${TASK_EMBEDDING_INDEX_VERSION:-v1}
+      TASK_INDEX_MAX_CHARACTERS: ${TASK_INDEX_MAX_CHARACTERS:-16000}
+      TASK_INDEX_MAX_UTF8_BYTES: ${TASK_INDEX_MAX_UTF8_BYTES:-7500}
+      TASK_RETRIEVAL_SIMILARITY_THRESHOLD: ${TASK_RETRIEVAL_SIMILARITY_THRESHOLD:-0.35}
+      COLLECTION_PREFIX: ${COLLECTION_PREFIX:-dduo_solo_founder}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CLI_BRIDGE_URL: ${DDUO_CLI_BRIDGE_URL:-http://host.docker.internal:0}
+      CLI_BRIDGE_TOKEN: ${DDUO_CLI_BRIDGE_TOKEN:-}
+      SLEEP_IDLE_SECONDS: ${SLEEP_IDLE_SECONDS:-1200}
+      SLEEP_TURN_THRESHOLD: ${SLEEP_TURN_THRESHOLD:-8}
+      SLEEP_BATCH_SIZE: ${SLEEP_BATCH_SIZE:-8}
+      SLEEP_BATCH_CHAR_LIMIT: ${SLEEP_BATCH_CHAR_LIMIT:-40000}
+      SLEEP_POLL_SECONDS: ${SLEEP_POLL_SECONDS:-2.0}
+      SLEEP_CLI_TIMEOUT_SECONDS: ${SLEEP_CLI_TIMEOUT_SECONDS:-900}
+      RETRIEVAL_SIMILARITY_THRESHOLD: ${RETRIEVAL_SIMILARITY_THRESHOLD:-0.5}
+      RETRIEVAL_EPISODE_LIMIT: ${RETRIEVAL_EPISODE_LIMIT:-3}
+      RETRIEVAL_FACT_LIMIT: ${RETRIEVAL_FACT_LIMIT:-4}
+      RETRIEVAL_HEURISTIC_LIMIT: ${RETRIEVAL_HEURISTIC_LIMIT:-4}
+      ARTIFACT_MAX_BYTES: ${ARTIFACT_MAX_BYTES:-10485760}
+      DDUO_NODE_ID: ${DDUO_NODE_ID:-}
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: frontend
+      dockerfile: ../docker/web.Dockerfile
+    ports:
+      - "127.0.0.1:${DDUO_SOLO_FOUNDER_WEB_PORT:-4173}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: dduo_solo_founder
+      POSTGRES_USER: dduo_solo_founder
+      POSTGRES_PASSWORD: ${DDUO_DATABASE_PASSWORD:-dduo_solo_founder}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dduo_solo_founder -d dduo_solo_founder"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.1
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  model-cache:
+  postgres-data:
+  qdrant-data:

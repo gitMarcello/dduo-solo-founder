@@ -1,0 +1,33 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dduo-solo-founder",
+  "version": "0.2.0-beta.1",
+  "description": "Isolated project memory, planning, and task context for Codex and Claude Code",
+  "author": {
+    "name": "dDuo Solo Founder contributors",
+    "url": "https://github.com/gitMarcello/dduo-solo-founder"
+  },
+  "homepage": "https://github.com/gitMarcello/dduo-solo-founder",
+  "repository": "https://github.com/gitMarcello/dduo-solo-founder",
+  "license": "Apache-2.0",
+  "keywords": [
+    "agent-memory",
+    "codex",
+    "claude-code",
+    "mcp",
+    "project-management"
+  ],
+  "extensions": {
+    "it.dduo.client-support": {
+      "supportedClients": [
+        "codex",
+        "claude-code"
+      ],
+      "unsupportedClientBehavior": "disabled",
+      "lifecycleAdapters": {
+        "codex": "it.dduo.client-support/codex/.codex-plugin/plugin.json",
+        "claude-code": "it.dduo.client-support/claude-code/.claude-plugin/plugin.json"
+      }
+    }
+  }
+}

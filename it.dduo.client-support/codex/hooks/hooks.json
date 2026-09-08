@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "node \"$PLUGIN_ROOT/hooks/codex-runtime-hook.mjs\" session-start", "timeout": 200, "additionalContextLimit": 0}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "node \"$PLUGIN_ROOT/hooks/codex-runtime-hook.mjs\" prompt", "timeout": 60, "additionalContextLimit": 0}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "node \"$PLUGIN_ROOT/hooks/codex-runtime-hook.mjs\" stop", "timeout": 20}]}]
+  }
+}

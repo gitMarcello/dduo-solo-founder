@@ -1,0 +1,38 @@
+{
+  "name": "dduo-solo-founder-web",
+  "private": true,
+  "version": "0.2.0-beta.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "biome check src e2e vitest.config.ts playwright.config.ts",
+    "format": "biome check --write src e2e vitest.config.ts playwright.config.ts",
+    "test": "vitest run --coverage",
+    "test:browser:types": "tsc --project tsconfig.e2e.json",
+    "test:browser": "playwright test",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^6.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@playwright/test": "^1.61.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
+  }
+}

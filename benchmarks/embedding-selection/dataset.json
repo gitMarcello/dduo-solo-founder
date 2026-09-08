@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "provenance": "Entirely fictional greenhouse scenario; no customer or device data.",
+  "documents": [
+    {"id":"d1","text":"La serra didattica insegna ai visitatori come coltivare piante aromatiche.","type":"reusable_fact"},
+    {"id":"d2","text":"Prima di aprire la serra ai visitatori bisogna controllare l'irrigazione.","type":"episode"},
+    {"id":"d3","text":"Se un sensore di sicurezza non supera la verifica, le visite restano sospese fino alla riparazione.","type":"heuristic"},
+    {"id":"d4","text":"The greenhouse gateway stores temperature readings on its local hub.","type":"reusable_fact"},
+    {"id":"d5","text":"L'acquisto delle sementi e l'organizzazione dei laboratori sono attività distinte.","type":"reusable_fact"},
+    {"id":"d6","text":"Le prenotazioni su carta sono state sostituite da un calendario condiviso.","type":"episode"},
+    {"id":"d7","text":"I volontari ricevono il calendario delle visite con un riepilogo settimanale via email.","type":"reusable_fact"},
+    {"id":"d8","text":"La pompa di irrigazione deve assorbire meno di venticinque watt.","type":"heuristic"},
+    {"id":"d9","text":"L'apertura della serra richiede un controllo di sicurezza e percorsi accessibili ai visitatori.","type":"reusable_fact"},
+    {"id":"d10","text":"The school donation programme collects spare gardening tools for practical lessons.","type":"episode"}
+  ],
+  "queries": [
+    {"id":"q1","text":"Quali verifiche servono prima di aprire la serra?","relevant":["d2","d9"]},
+    {"id":"q2","text":"Cosa succede se un sensore fallisce il controllo?","relevant":["d3"]},
+    {"id":"q3","text":"Dove sono conservate le misurazioni della temperatura?","relevant":["d4"]},
+    {"id":"q4","text":"Come si prenotano le visite al posto dei moduli cartacei?","relevant":["d6"]},
+    {"id":"q5","text":"Qual è il vincolo energetico dell'irrigazione?","relevant":["d8"]},
+    {"id":"q6","text":"What does the school donation programme collect?","relevant":["d10"]},
+    {"id":"q7","text":"Come ricevono il programma i volontari?","relevant":["d7"]},
+    {"id":"q8","text":"Qual è lo scopo educativo della serra?","relevant":["d1"]}
+  ]
+}
