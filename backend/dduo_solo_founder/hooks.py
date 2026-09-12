@@ -37,6 +37,7 @@ from dduo_solo_founder.context_budget import (
     measure_fragment_sources,
 )
 from dduo_solo_founder.manual_cache import load_verified_manual, store_verified_manual
+from dduo_solo_founder.link_privacy import redact_dashboard_access_tokens
 from dduo_solo_founder.observability import (
     ESTIMATOR_VERSION,
     estimated_tokens_for_bytes,
@@ -105,7 +106,7 @@ def read_input() -> dict:
         value = json.load(sys.stdin)
     except (EOFError, json.JSONDecodeError):
         return {}
-    return value if isinstance(value, dict) else {}
+    return redact_dashboard_access_tokens(value) if isinstance(value, dict) else {}
 
 
 def emit(context: str, event_name: str, *, warn: bool = False, **extra) -> None:

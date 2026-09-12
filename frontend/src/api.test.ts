@@ -14,6 +14,19 @@ function response(payload: unknown, status = 200) {
 }
 
 describe('api', () => {
+  it('exchanges reusable links only in a POST body and preserves a valid cookie CSRF token after a rejected link', async () => {
+    const token = `dduo_link_${'a'.repeat(43)}`;
+    localStorage.setItem('dduo-solo-founder-csrf:p1', 'existing-csrf');
+    const fetch = vi.fn().mockResolvedValue(response({ detail: 'expired' }, 401));
+    vi.stubGlobal('fetch', fetch);
+    await expect(api.exchangeBrowserSession('p1', token)).rejects.toMatchObject({ status: 401 });
+    expect(fetch.mock.calls[0][0]).toBe('/api/projects/p1/auth/browser-session');
+    expect(fetch.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ ticket: token });
+    expect(fetch.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    expect(localStorage.getItem('dduo-solo-founder-csrf:p1')).toBe('existing-csrf');
+    expect(Object.values(localStorage)).not.toContain(token);
+  });
   it('renames only the selected project with version checking', async () => {
     const fetch = vi.fn().mockResolvedValue(response({ id: 'p/1', name: 'New' }));
     vi.stubGlobal('fetch', fetch);

@@ -1,6 +1,6 @@
 {
   "name": "dduo-solo-founder",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "description": "Shared sleep-consolidated project memory, versioned plans, tasks, and encrypted recovery for Claude Code",
   "author": {"name": "dDuo Solo Founder contributors"},
   "license": "Apache-2.0",

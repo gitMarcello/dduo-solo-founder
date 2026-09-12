@@ -108,6 +108,15 @@ const italian = {
   'Memory online': 'Memoria online',
   'Memory needs attention': 'La memoria richiede attenzione',
   'Memory unavailable': 'Memoria non disponibile',
+  'Memory status not verified': 'Stato della memoria non verificato',
+  'This access link is incomplete or ambiguous. Ask your assistant for a new link to this page.':
+    'Il link di accesso è incompleto o ambiguo. Chiedi al tuo assistente un nuovo link per questa pagina.',
+  'This older access link has expired or was already used. Ask your assistant for a new link to this page.':
+    'Questo vecchio link è scaduto o è già stato usato. Chiedi al tuo assistente un nuovo link per questa pagina.',
+  'Access has expired or is missing. Ask your assistant for a new link to this page.':
+    'L’accesso è scaduto o manca. Chiedi al tuo assistente un nuovo link per questa pagina.',
+  'The memory server could not be reached. Try again shortly; your data has not been removed.':
+    'Il server della memoria non è raggiungibile. Riprova tra poco: i tuoi dati non sono stati eliminati.',
   'Memory is up to date.': 'La memoria è aggiornata.',
   'Recent turns are waiting to be consolidated.':
     'I turni recenti sono in attesa di consolidamento.',

@@ -58,6 +58,7 @@ def test_mcp_contract_contains_complete_protocol_and_real_schemas():
         "open_setup",
         "check_setup",
         "check_memory_connection",
+        "get_dashboard_link",
         "get_project_briefing",
         "get_project_manual",
         "update_project_manual",
@@ -1731,6 +1732,96 @@ async def test_official_mcp_sdk_negotiates_lists_tools_and_calls(monkeypatch, tm
 
     claude_tools = await _sdk_session("claude-ai", unsupported)
     assert len(claude_tools.tools) == len(mcp_server.TOOL_MODELS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_name", ["Codex Desktop", "Claude Code"])
+async def test_sleep_contract_exposes_scope_effects_and_conservative_hints(client_name, monkeypatch):
+    monkeypatch.delenv(mcp_server.MCP_CLIENT_ENV, raising=False)
+
+    async def inspect(session, _initialized):
+        return await session.list_tools()
+
+    listed = await _sdk_session(client_name, inspect)
+    tools = {tool.name: tool for tool in listed.tools}
+    for name in ("request_sleep", "retry_sleep_job"):
+        tool = tools[name]
+        assert tool.annotations.model_dump(by_alias=True, exclude_none=True) == {
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": True,
+        }
+        assert "off-record" in tool.description
+        assert "Codex/Claude" in tool.description
+        assert "configured embeddings (OpenAI by default)" in tool.description
+        assert "Processing may consume subscription usage and API credits where applicable" in tool.description
+        assert "new chat transcript" in tool.description
+        assert "client approval" in tool.description
+    assert "all project sessions" in tools["request_sleep"].description
+    assert "control fields only" in tools["request_sleep"].description
+    session_field = tools["request_sleep"].input_schema["properties"]["session_id"]
+    assert "all project sessions" in session_field["description"]
+    assert "never invent" in session_field["description"]
+    assert "Existing job ID" in tools["retry_sleep_job"].input_schema["properties"]["job_id"]["description"]
+    assert tools["get_memory_status"].annotations is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_name", ["Codex Desktop", "Claude Code"])
+@pytest.mark.parametrize(
+    ("name", "arguments", "path", "body"),
+    [
+        ("request_sleep", {}, "/projects/p1/sleep", {}),
+        (
+            "request_sleep", {"session_id": "s1", "trigger": "topic_boundary"},
+            "/projects/p1/sleep", {"session_id": "s1", "trigger": "topic_boundary"},
+        ),
+        (
+            "request_sleep", {"session_id": None, "trigger": "manual"},
+            "/projects/p1/sleep", {"session_id": None, "trigger": "manual"},
+        ),
+        (
+            "request_sleep",
+            {"session_id": "s1", "trigger": "session_start", "provider": "claude", "resume_auth": True},
+            "/projects/p1/sleep",
+            {"session_id": "s1", "trigger": "session_start", "provider": "claude", "resume_auth": True},
+        ),
+        ("retry_sleep_job", {"job_id": "j1"}, "/projects/p1/sleep-jobs/j1/retry", None),
+    ],
+)
+async def test_sleep_metadata_keeps_real_mcp_dispatch_unchanged(
+    client_name, name, arguments, path, body, monkeypatch, tmp_path,
+):
+    monkeypatch.delenv(mcp_server.MCP_CLIENT_ENV, raising=False)
+    monkeypatch.setattr(mcp_server, "_resolve_tool_runtime", lambda client, _arguments: mcp_server.MCPToolRuntime(
+        client=client, project_root=tmp_path, project_id="p1", api=mcp_server.ApiEndpoint("https://memory.example"),
+        dashboard_url=None, plans_dashboard_url=None, binding=None,
+    ))
+    calls = []
+    monkeypatch.setattr(
+        mcp_server, "request",
+        lambda api, method, route, payload=None: calls.append((api, method, route, payload)) or {"scheduled": 1},
+    )
+    # Result observability remains a separate, existing operation. Do not
+    # misrepresent the scheduling body's scope as a ban on all other traffic.
+    observations = []
+    monkeypatch.setattr(
+        mcp_server, "flush_observability_queue",
+        lambda *args, **_kwargs: observations.append(args),
+    )
+    provided = {**arguments, mcp_server.MCP_WORKSPACE_ARGUMENT: str(tmp_path)}
+    original = dict(provided)
+
+    async def invoke(session, _initialized):
+        return await session.call_tool(name, provided)
+
+    response = await _sdk_session(client_name, invoke)
+    assert response.is_error is False
+    assert response.structured_content == {"scheduled": 1}
+    assert calls == [(mcp_server.ApiEndpoint("https://memory.example"), "POST", path, body)]
+    assert len(observations) == 1
+    assert provided == original
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 # dDuo Solo Founder: complete guide
 
-Overview for `0.2.0-beta.1`. Use the linked runbooks for exact commands and
+Overview for `0.2.0-beta.2`. Use the linked runbooks for exact commands and
 recovery procedures; use the [README](../README.md) for copyable setup prompts.
 
 ## 1. What the founder gets

@@ -39,6 +39,13 @@ e salva snapshot private con checksum di PostgreSQL/Qdrant sotto
 `~/.config/dduo-solo-founder/upgrade-snapshots/`. Sono una protezione locale per
 rollback, non un sostituto del backup cifrato fuori dispositivo.
 
+Gli archivi sono creati dall'utente di sistema che installa, con permessi `0600`.
+Docker legge il volume fermo in sola lettura e invia l'archivio a quel file;
+non crea file di proprietà root nella directory degli snapshot sul computer.
+Verifica tar e checksum restano obbligatorie. Se uno snapshot fallisce, il
+recupero tenta di riavviare tutti i progetti coinvolti anche se fallisce la
+pulizia temporanea. Uno stop non riuscito blocca lo snapshot, anche con `--force`.
+
 I segreti vivono in `~/.config/dduo-solo-founder/project-secrets/<project-id>/`.
 Le migrazioni di compatibilità preservano i valori specifici e tornano allo
 stato precedente in caso di errore. Registrazioni software e cache obsolete

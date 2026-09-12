@@ -5,7 +5,7 @@ import json
 import os
 import re
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2096,7 +2096,7 @@ def test_team_invite_requires_a_gateway_and_dashboard(monkeypatch, tmp_path):
     assert "dashboard URL is unavailable" in str(no_dashboard.exception)
 
 
-def test_remote_dashboard_uses_one_time_ticket_and_redacts_output(monkeypatch, tmp_path):
+def test_remote_dashboard_uses_reusable_link_and_redacts_output(monkeypatch, tmp_path):
     project = {
         "id": "p1",
         "name": "TeamApp",
@@ -2111,11 +2111,15 @@ def test_remote_dashboard_uses_one_time_ticket_and_redacts_output(monkeypatch, t
     monkeypatch.setattr(launcher, "find_workspace_root", lambda _: tmp_path)
     monkeypatch.setattr(launcher, "load_project", lambda _: project)
     monkeypatch.setattr(launcher, "binding_from_project", lambda *args, **kwargs: binding)
-    monkeypatch.setattr(
-        launcher,
-        "_api_request",
-        lambda *args, **kwargs: {"ticket": "dduo_web_private-ticket"},
-    )
+    raw_link = "dduo_link_" + "r" * 43
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    requests = []
+
+    def api_request(_project, method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        return {"token": raw_link, "expires_at": expires_at, "reusable": True}
+
+    monkeypatch.setattr(launcher, "_api_request", api_request)
     opened = []
     monkeypatch.setattr(launcher.webbrowser, "open", lambda url: opened.append(url))
     result = runner.invoke(
@@ -2123,9 +2127,10 @@ def test_remote_dashboard_uses_one_time_ticket_and_redacts_output(monkeypatch, t
         ["dashboard", "--project-root", str(tmp_path), "--tab", "team"],
     )
     assert result.exit_code == 0
-    assert "dduo_web_private-ticket" in opened[0]
-    assert "dduo_web_private-ticket" not in result.stdout
-    assert "ticket=<one-time>" in result.stdout
+    assert opened == [f"https://8.8.8.8/?project=p1&tab=team&access_token={raw_link}"]
+    assert raw_link not in result.stdout
+    assert "access_token=<private-seven-day-link>" in result.stdout
+    assert requests == [("POST", "/projects/p1/auth/browser-link", {"timeout": 30})]
 
 
 def test_dashboard_covers_vps_host_local_and_invalid_routes(monkeypatch, tmp_path):
@@ -2152,18 +2157,24 @@ def test_dashboard_covers_vps_host_local_and_invalid_routes(monkeypatch, tmp_pat
         "_gateway_project",
         lambda _project_id: {"dashboard_url": "https://203.0.113.10:9443"},
     )
-    monkeypatch.setattr(
-        launcher,
-        "_api_request",
-        lambda *_args, **_kwargs: {"ticket": "private-host-ticket"},
-    )
+    raw_link = "dduo_link_" + "h" * 43
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    requests = []
+
+    def api_request(_project, method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        return {"token": raw_link, "expires_at": expires_at, "reusable": True}
+
+    monkeypatch.setattr(launcher, "_api_request", api_request)
     hosted = runner.invoke(
         launcher.app,
         ["dashboard", "--project-root", str(tmp_path), "--tab", "observability"],
     )
     assert hosted.exit_code == 0
-    assert "private-host-ticket" in opened[-1]
-    assert "private-host-ticket" not in hosted.stdout
+    assert opened[-1] == f"https://203.0.113.10:9443/?project=p1&tab=observability&access_token={raw_link}"
+    assert raw_link not in hosted.stdout
+    assert "access_token=<private-seven-day-link>" in hosted.stdout
+    assert requests == [("POST", "/projects/p1/auth/browser-link", {"timeout": 30})]
 
     monkeypatch.setattr(launcher, "_gateway_project", lambda _project_id: None)
     missing_gateway = runner.invoke(
@@ -2191,6 +2202,7 @@ def test_dashboard_covers_vps_host_local_and_invalid_routes(monkeypatch, tmp_pat
     )
     assert local.exit_code == 0
     assert opened[-1].endswith("project=p1&tab=memory")
+    assert len(requests) == 1
 
     invalid = runner.invoke(
         launcher.app,

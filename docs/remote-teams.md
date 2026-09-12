@@ -224,17 +224,27 @@ device receives an already-consumed conflict. If the collaborator cannot access
 the project Git repository, memory access does not grant it and work should stop
 until the repository owner authorizes Git access.
 
-Open a remote dashboard through the CLI rather than placing a permanent bearer
-in a URL:
+Open the dashboard or a Task/Plan directly from the links dDuo returns in chat.
+Each remote link contains a private browser token valid for **seven days**;
+it can be reused on different visits and browsers, without another login or
+confirmation. Anyone holding it can access that project with the issuing
+member's permissions, so do not publish it. The permanent device bearer is
+never included. The agent can also open it through the CLI:
 
 ```bash
 dduo-solo-founder dashboard --tab tasks --project-root .
 ```
 
-The CLI exchanges the device bearer for a five-minute, one-time browser ticket.
-The dashboard consumes it into a project-specific, `HttpOnly`, `Secure`,
-`SameSite=Strict` session cookie valid for seven days. Revoking a member also
-revokes that member's device and browser credentials.
+The dashboard automatically exchanges the browser token for a project-specific,
+`HttpOnly`, `Secure`, `SameSite=Strict` session cookie, then removes the token
+from the address bar. The original chat link stays reusable until expiry;
+the cookie does not outlive it. Revoking a member or device invalidates its
+links and browser access. After expiry, ask dDuo for a fresh link via
+`get_dashboard_link`; no project reconfiguration is required. Legacy one-time
+tickets remain supported for older clients.
+Logging out closes that browser session, not the reusable link. Links remain
+in the chat where they were shared; do not treat chat history or third-party
+proxy logs as secret-free storage.
 
 Every browser mutation additionally requires the CSRF value issued for that
 exact browser session. The dashboard keeps it only in origin-scoped browser

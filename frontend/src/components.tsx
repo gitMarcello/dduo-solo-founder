@@ -65,8 +65,8 @@ export function Sidebar({
   onTab,
 }: {
   tab: Tab;
-  openTasks: number;
-  memoryState: 'online' | 'attention' | 'offline';
+  openTasks: number | null;
+  memoryState: 'online' | 'attention' | 'offline' | 'unknown';
   canManageInfrastructure: boolean;
   canOpenLocalSetup: boolean;
   onTab: (tab: Tab) => void;
@@ -105,7 +105,7 @@ export function Sidebar({
           >
             {item.icon}
             <span className="nav-label">{item.label}</span>
-            {item.id === 'tasks' && <small>{openTasks}</small>}
+            {item.id === 'tasks' && openTasks !== null && <small>{openTasks}</small>}
           </button>
         ))}
       </nav>
@@ -115,7 +115,9 @@ export function Sidebar({
           ? t('Memory online')
           : memoryState === 'attention'
             ? t('Memory needs attention')
-            : t('Memory unavailable')}
+            : memoryState === 'unknown'
+              ? t('Memory status not verified')
+              : t('Memory unavailable')}
       </div>
     </aside>
   );

@@ -2113,11 +2113,13 @@ async def test_project_scoped_browser_ticket_cookie_replay_expiry_and_revoke(
             f"/projects/{project_id}/auth/browser-ticket", headers=headers
         )
         assert ticket_response.status_code == 200
+        assert ticket_response.headers["cache-control"] == "no-store"
         ticket = ticket_response.json()["ticket"]
         exchange = await client.post(
             f"/projects/{project_id}/auth/browser-session", json={"ticket": ticket}
         )
         assert exchange.status_code == 200
+        assert exchange.headers["cache-control"] == "no-store"
         csrf_token = exchange.json()["csrf_token"]
         assert csrf_token.startswith("dduo_csrf_")
         cookie_header = exchange.headers["set-cookie"]
@@ -2177,8 +2179,9 @@ async def test_project_scoped_browser_ticket_cookie_replay_expiry_and_revoke(
         app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize("credential", ["ticket", "link"])
 async def test_frozen_project_can_issue_a_browser_ticket_for_read_only_inspection(
-    db_factory, monkeypatch
+    db_factory, monkeypatch, credential,
 ):
     project_id, _, _, _, manager_token = await _seed_team(db_factory)
     async with db_factory() as db:
@@ -2189,8 +2192,187 @@ async def test_frozen_project_can_issue_a_browser_ticket_for_read_only_inspectio
 
     async with await _remote_client(db_factory, monkeypatch) as client:
         response = await client.post(
-            f"/projects/{project_id}/auth/browser-ticket",
+            f"/projects/{project_id}/auth/browser-{credential}",
             headers={"Authorization": f"Bearer {manager_token}"},
         )
         assert response.status_code == 200
-        assert response.json()["ticket"].startswith("dduo_web_")
+        raw = response.json()["ticket" if credential == "ticket" else "token"]
+        assert raw.startswith("dduo_web_" if credential == "ticket" else "dduo_link_")
+        exchange = await client.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw},
+        )
+        assert exchange.status_code == 200
+        assert (await client.get(f"/projects/{project_id}/team")).status_code == 200
+        blocked = await client.post(
+            f"/projects/{project_id}/tasks", json={"title": "Still read-only"},
+            headers={"X-DDUO-CSRF": exchange.json()["csrf_token"]},
+        )
+        assert blocked.status_code == 409
+    app.dependency_overrides.clear()
+
+
+async def test_browser_link_is_reusable_for_seven_days_across_browsers(db_factory, monkeypatch):
+    project_id, _, manager, _, bearer = await _seed_team(db_factory)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    monkeypatch.setattr(main_module, "utcnow", lambda: now)
+    monkeypatch.setattr(team_auth, "utcnow", lambda: now)
+    first = await _remote_client(db_factory, monkeypatch)
+    second = await _remote_client(db_factory, monkeypatch)
+    try:
+        issued = await first.post(
+            f"/projects/{project_id}/auth/browser-link",
+            headers={"Authorization": f"Bearer {bearer}"},
+            json={"expires_at": "2999-01-01", "ttl_days": 100},
+        )
+        assert issued.status_code == 200 and issued.headers["cache-control"] == "no-store"
+        raw = issued.json()["token"]
+        assert raw.startswith("dduo_link_") and len(raw) == 53
+        assert issued.json()["reusable"] is True
+        expires = datetime.fromisoformat(issued.json()["expires_at"])
+        assert expires == now + timedelta(days=7)
+        sessions, csrf_tokens = [], []
+        for browser in (first, first, second):
+            exchange = await browser.post(
+                f"/projects/{project_id}/auth/browser-session", json={"ticket": raw},
+            )
+            assert exchange.status_code == 200
+            assert exchange.headers["cache-control"] == "no-store"
+            cookie = exchange.headers["set-cookie"]
+            assert "Secure" in cookie and "HttpOnly" in cookie and "SameSite=strict" in cookie
+            sessions.append(browser.cookies.get(browser_cookie_name(project_id)))
+            csrf_tokens.append(exchange.json()["csrf_token"])
+            team = await browser.get(f"/projects/{project_id}/team")
+            assert team.status_code == 200 and team.json()["current_member"]["id"] == manager.id
+        assert len(set(sessions)) == len(set(csrf_tokens)) == 3
+        async with db_factory() as db:
+            rows = list(await db.scalars(select(BrowserAuthCredential)))
+            link = next(row for row in rows if row.secret_hash == hash_secret(raw))
+            assert link.kind == "ticket" and link.consumed_at is None
+            assert link.secret_hash != raw and link.csrf_secret_hash is None
+            assert team_auth._aware(link.expires_at) == expires
+            assert all(team_auth._aware(row.expires_at) <= expires for row in rows)
+            assert len(rows) == 4
+
+        now += timedelta(days=6, hours=23)
+        late = await second.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw},
+        )
+        assert late.status_code == 200 and "Max-Age=3600" in late.headers["set-cookie"]
+        now = expires
+        assert (await second.get(f"/projects/{project_id}/team")).status_code == 401
+        expired = await first.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw},
+        )
+        assert expired.status_code == 410
+    finally:
+        await first.aclose()
+        await second.aclose()
+        app.dependency_overrides.clear()
+
+
+async def test_browser_links_require_real_project_bearer_not_cookies_or_local_owner(
+    db_factory, monkeypatch,
+):
+    project_id, other_project_id, _, _, bearer = await _seed_team(db_factory)
+    async with await _remote_client(db_factory, monkeypatch) as client:
+        endpoint = f"/projects/{project_id}/auth/browser-link"
+        assert (await client.post(endpoint)).status_code == 401
+        headers = {"Authorization": f"Bearer {bearer}"}
+        assert (await client.post(
+            f"/projects/{other_project_id}/auth/browser-link", headers=headers,
+        )).status_code == 404
+        raw = (await client.post(endpoint, headers=headers)).json()["token"]
+        exchange = await client.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw},
+        )
+        assert exchange.status_code == 200
+        assert (await client.post(endpoint, headers={
+            "X-DDUO-CSRF": exchange.json()["csrf_token"],
+        })).status_code == 403
+        assert (await client.get(f"/projects/{project_id}/team", headers={
+            "Authorization": f"Bearer {raw}",
+        })).status_code == 401
+        client.cookies.clear()
+        monkeypatch.setenv("DDUO_AUTH_REQUIRED", "false")
+        monkeypatch.setattr(team_auth, "_trusted_local_request", lambda _request: True)
+        assert (await client.post(endpoint)).status_code == 403
+    app.dependency_overrides.clear()
+
+
+async def test_browser_ingress_prefix_is_hash_bound_and_session_tokens_cannot_exchange(
+    db_factory, monkeypatch,
+):
+    project_id, other_project_id, _, _, bearer = await _seed_team(db_factory)
+    async with await _remote_client(db_factory, monkeypatch) as client:
+        headers = {"Authorization": f"Bearer {bearer}"}
+        raw_link = (await client.post(
+            f"/projects/{project_id}/auth/browser-link", headers=headers,
+        )).json()["token"]
+        raw_ticket = (await client.post(
+            f"/projects/{project_id}/auth/browser-ticket", headers=headers,
+        )).json()["ticket"]
+        assert (await client.post(
+            f"/projects/{other_project_id}/auth/browser-session", json={"ticket": raw_link},
+        )).status_code == 404
+        for altered in (
+            raw_link.replace("dduo_link_", "dduo_web_", 1),
+            raw_ticket.replace("dduo_web_", "dduo_link_", 1),
+            raw_link[:-1] + ("A" if raw_link[-1] != "A" else "B"),
+        ):
+            assert (await client.post(
+                f"/projects/{project_id}/auth/browser-session", json={"ticket": altered},
+            )).status_code == 404
+        exchange = await client.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw_ticket},
+        )
+        assert exchange.status_code == 200
+        session = client.cookies.get(browser_cookie_name(project_id))
+        for not_ingress in (session, session.replace("dduo_web_", "dduo_link_", 1)):
+            assert (await client.post(
+                f"/projects/{project_id}/auth/browser-session", json={"ticket": not_ingress},
+            )).status_code == 404
+        assert (await client.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw_ticket},
+        )).status_code == 409
+        assert (await client.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw_link},
+        )).status_code == 200
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("revocation", ["member", "device", "link", "consumed"])
+async def test_reusable_browser_links_respect_revocation_and_consumption(
+    db_factory, monkeypatch, revocation,
+):
+    project_id, _, manager, access, bearer = await _seed_team(db_factory)
+    async with await _remote_client(db_factory, monkeypatch) as client:
+        raw = (await client.post(
+            f"/projects/{project_id}/auth/browser-link",
+            headers={"Authorization": f"Bearer {bearer}"},
+        )).json()["token"]
+        assert (await client.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw},
+        )).status_code == 200
+        async with db_factory() as db:
+            if revocation == "member":
+                (await db.get(TeamMember, manager.id)).status = "revoked"
+            elif revocation == "device":
+                (await db.get(TeamAccessToken, access.id)).revoked_at = team_auth.utcnow()
+            else:
+                row = await db.scalar(select(BrowserAuthCredential).where(
+                    BrowserAuthCredential.secret_hash == hash_secret(raw),
+                ))
+                if revocation == "link":
+                    row.revoked_at = team_auth.utcnow()
+                else:
+                    row.consumed_at = team_auth.utcnow()
+            await db.commit()
+        result = await client.post(
+            f"/projects/{project_id}/auth/browser-session", json={"ticket": raw},
+        )
+        assert result.status_code == (
+            401 if revocation in {"member", "device"} else 410 if revocation == "link" else 409
+        )
+        if revocation in {"member", "device"}:
+            assert (await client.get(f"/projects/{project_id}/team")).status_code == 401
+    app.dependency_overrides.clear()

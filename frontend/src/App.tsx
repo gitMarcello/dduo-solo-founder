@@ -1,6 +1,6 @@
 import { RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from './api';
+import { ApiError, api } from './api';
 import {
   ActivityView,
   BackupView,
@@ -37,18 +37,49 @@ function initialTab(): Tab {
   return TABS.includes(requested as Tab) ? (requested as Tab) : 'tasks';
 }
 
+function initialBrowserAccess() {
+  const query = new URLSearchParams(window.location.search);
+  const projects = query.getAll('project');
+  const links = query.getAll('access_token');
+  const tickets = query.getAll('ticket');
+  const values = [...links, ...tickets];
+  const token = values[0] ?? '';
+  const projectId = projects[0]?.trim() ?? '';
+  const invalid =
+    projects.length > 1 ||
+    (projects.length > 0 &&
+      (!projectId ||
+        projects[0] !== projectId ||
+        projectId.length > 160 ||
+        /\s/.test(projectId))) ||
+    (values.length > 0 &&
+      (values.length !== 1 ||
+        projects.length !== 1 ||
+        !projectId ||
+        !token ||
+        token !== token.trim() ||
+        [...token].some(
+          (character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127,
+        ) ||
+        (links.length > 0 && !/^dduo_link_[A-Za-z0-9_-]{43}$/.test(token))));
+  return { token, projectId, legacy: tickets.length > 0, invalid };
+}
+
+type BrowserAccessError = '' | 'invalid' | 'expired' | 'legacy_expired' | 'unreachable';
+
 function DashboardApp() {
   const { language, setLanguage, t } = useI18n();
   const [tab, setTab] = useState<Tab>(initialTab);
-  const [browserTicket] = useState(() => {
-    const query = new URLSearchParams(window.location.search);
-    const ticket = query.get('ticket')?.trim() ?? '';
-    const projectId = query.get('project')?.trim() ?? '';
-    return ticket ? { ticket, projectId } : null;
-  });
-  const [browserAuthReady, setBrowserAuthReady] = useState(!browserTicket);
-  const [browserAuthLoading, setBrowserAuthLoading] = useState(Boolean(browserTicket));
-  const [browserAuthError, setBrowserAuthError] = useState('');
+  const [browserAccess] = useState(initialBrowserAccess);
+  const [browserAuthReady, setBrowserAuthReady] = useState(
+    !browserAccess.token && !browserAccess.invalid,
+  );
+  const [browserAuthLoading, setBrowserAuthLoading] = useState(
+    Boolean(browserAccess.token) && !browserAccess.invalid,
+  );
+  const [browserAuthError, setBrowserAuthError] = useState<BrowserAccessError>(
+    browserAccess.invalid ? 'invalid' : '',
+  );
   const browserExchangeStarted = useRef(false);
   const browserExchangeAttempt = useRef(0);
   const browserExchangeInFlight = useRef(false);
@@ -66,39 +97,54 @@ function DashboardApp() {
   );
 
   const exchangeBrowserTicket = useCallback(async () => {
-    if (!browserTicket || browserExchangeInFlight.current) return;
+    if (!browserAccess.token || browserAccess.invalid || browserExchangeInFlight.current) return;
     browserExchangeInFlight.current = true;
     const attempt = ++browserExchangeAttempt.current;
     setBrowserAuthLoading(true);
     setBrowserAuthError('');
-    if (!browserTicket.projectId) {
-      setBrowserAuthError(t('The browser access link is missing its project identifier.'));
-      setBrowserAuthLoading(false);
-      browserExchangeInFlight.current = false;
-      return;
-    }
     try {
-      await api.exchangeBrowserSession(browserTicket.projectId, browserTicket.ticket);
+      await api.exchangeBrowserSession(browserAccess.projectId, browserAccess.token);
       if (attempt === browserExchangeAttempt.current) setBrowserAuthReady(true);
     } catch (reason) {
+      const rejected = reason instanceof ApiError && reason.status >= 400 && reason.status < 500;
+      // An old link must not invalidate an already-authorized cookie for this
+      // exact project. This is one read-only check, never a repeated exchange.
+      if (rejected) {
+        try {
+          await api.team(browserAccess.projectId);
+          if (attempt === browserExchangeAttempt.current) setBrowserAuthReady(true);
+          return;
+        } catch (fallbackReason) {
+          if (!(fallbackReason instanceof ApiError) || fallbackReason.status >= 500) {
+            if (attempt === browserExchangeAttempt.current) {
+              setBrowserAuthError('unreachable');
+              setBrowserAuthReady(false);
+            }
+            return;
+          }
+        }
+      }
       if (attempt === browserExchangeAttempt.current) {
-        setBrowserAuthError(reason instanceof Error ? reason.message : String(reason));
+        setBrowserAuthError(
+          rejected ? (browserAccess.legacy ? 'legacy_expired' : 'expired') : 'unreachable',
+        );
         setBrowserAuthReady(false);
       }
     } finally {
       browserExchangeInFlight.current = false;
       if (attempt === browserExchangeAttempt.current) setBrowserAuthLoading(false);
     }
-  }, [browserTicket, t]);
+  }, [browserAccess]);
 
   useEffect(() => {
-    if (!browserTicket || browserExchangeStarted.current) return;
+    if (browserExchangeStarted.current) return;
     browserExchangeStarted.current = true;
     const url = new URL(window.location.href);
     url.searchParams.delete('ticket');
+    url.searchParams.delete('access_token');
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
     void exchangeBrowserTicket();
-  }, [browserTicket, exchangeBrowserTicket]);
+  }, [exchangeBrowserTicket]);
 
   useEffect(() => {
     let active = true;
@@ -112,24 +158,42 @@ function DashboardApp() {
     };
   }, [browserAuthReady]);
 
-  const openTasks =
-    project.data?.openTaskCount ??
-    project.data?.tasks.filter(
-      (task) => task.kind === 'task' && !['done', 'cancelled'].includes(task.status),
-    ).length ??
-    0;
-  const memoryState = !online
-    ? 'offline'
-    : project.data && !project.data.memoryStatus.available
-      ? 'attention'
-      : 'online';
+  const openTasks = !project.data
+    ? null
+    : (project.data?.openTaskCount ??
+      project.data?.tasks.filter(
+        (task) => task.kind === 'task' && !['done', 'cancelled'].includes(task.status),
+      ).length ??
+      0);
+  const memoryState = !project.data
+    ? 'unknown'
+    : !online
+      ? 'offline'
+      : project.data && !project.data.memoryStatus.available
+        ? 'attention'
+        : 'online';
+  const authMessage =
+    browserAuthError === 'invalid'
+      ? t(
+          'This access link is incomplete or ambiguous. Ask your assistant for a new link to this page.',
+        )
+      : browserAuthError === 'legacy_expired'
+        ? t(
+            'This older access link has expired or was already used. Ask your assistant for a new link to this page.',
+          )
+        : browserAuthError === 'expired' || project.accessDenied
+          ? t('Access has expired or is missing. Ask your assistant for a new link to this page.')
+          : t(
+              'The memory server could not be reached. Try again shortly; your data has not been removed.',
+            );
   const canManageInfrastructure = Boolean(project.data?.team.capabilities.manage_infrastructure);
   const canOpenLocalSetup = Boolean(
     canManageInfrastructure && project.data?.team.current_member?.trusted_local,
   );
   const backupStatus = project.data?.backup ?? null;
-  const refreshing =
-    tab === 'observability'
+  const refreshing = !project.data
+    ? project.loading
+    : tab === 'observability'
       ? observability.loading || observability.eventsLoading
       : tab === 'team'
         ? team.loading || team.manualLoading
@@ -236,27 +300,34 @@ function DashboardApp() {
             <button
               type="button"
               className="icon"
-              disabled={!project.projectId || refreshing}
+              disabled={
+                !project.projectId ||
+                refreshing ||
+                browserAuthLoading ||
+                (!browserAuthReady && browserAuthError !== 'unreachable')
+              }
               aria-label={t('Refresh current view')}
               title={t('Refresh')}
               onClick={() =>
-                void (tab === 'observability'
-                  ? Promise.all([observability.refresh(), team.refresh()])
-                  : tab === 'team'
-                    ? team.refresh()
-                    : project.refresh())
+                void (!browserAuthReady
+                  ? exchangeBrowserTicket()
+                  : !project.data
+                    ? project.refresh()
+                    : tab === 'observability'
+                      ? Promise.all([observability.refresh(), team.refresh()])
+                      : tab === 'team'
+                        ? team.refresh()
+                        : project.refresh())
               }
             >
               <RefreshCw className={refreshing ? 'spin' : ''} />
             </button>
           </div>
         </header>
-        {browserAuthError && (
+        {(browserAuthError || project.accessDenied) && (
           <div className="error browser-auth-error" role="alert">
-            <span>
-              {t('Browser access could not be established: {error}', { error: browserAuthError })}
-            </span>
-            {browserTicket?.projectId && (
+            <span>{authMessage}</span>
+            {browserAuthError === 'unreachable' && (
               <button
                 type="button"
                 className="secondary browser-auth-retry"
@@ -274,9 +345,13 @@ function DashboardApp() {
           </div>
         )}
         {browserAuthReady && !project.projectId && <ConnectionForm onConnect={project.connect} />}
-        {project.error && (
+        {project.error && !project.accessDenied && (
           <div className="error" role="alert">
-            {project.error}
+            {project.loadUnavailable
+              ? t(
+                  'The memory server could not be reached. Try again shortly; your data has not been removed.',
+                )
+              : project.error}
           </div>
         )}
         {project.loading && !project.data && (

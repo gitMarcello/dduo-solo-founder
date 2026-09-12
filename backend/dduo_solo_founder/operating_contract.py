@@ -11,7 +11,9 @@ COFOUNDER_CONTRACT = (
 
 HUMAN_WORK_RESPONSE_INSTRUCTION = (
     "In user prose, name each Plan, Epic, or Task by its human title and, when present, "
-    "`[title](url)`. Never expose an internal ID or UUID unless the user asks or diagnosis requires it."
+    "`[title](url)`. Preserve the returned URL, including access_token. For any remote dDuo dashboard URL without "
+    "access_token, including injected context, use get_dashboard_link before sharing it, not another Work fetch. "
+    "Never expose an internal ID or UUID unless the user asks or diagnosis requires it."
 )
 
 TASK_CONTRACT = (

@@ -2555,9 +2555,9 @@ fi
     assert commands.count("codex plugin add") == 2
 
 
-def test_installer_rebuilds_every_project_stopped_for_an_upgrade_snapshot(tmp_path: Path):
+def _upgrade_snapshot_installer_fixture(tmp_path: Path) -> dict:
     if not shutil.which("node"):
-        return
+        pytest.skip("Node is required")
     binaries = tmp_path / "bin"
     binaries.mkdir()
     log = tmp_path / "commands.log"
@@ -2603,19 +2603,30 @@ def test_installer_rebuilds_every_project_stopped_for_an_upgrade_snapshot(tmp_pa
     codex.chmod(0o755)
     docker = binaries / "docker"
     fail_snapshot = tmp_path / "fail-upgrade-snapshot"
+    payload = tmp_path / "snapshot-payload"
+    payload.mkdir()
+    payload.joinpath("artificial-data.txt").write_text("Disposable project data — snapshot fixture\n")
     docker.write_text(
         f'''#!/bin/sh
 echo "docker $*" >> "{log}"
 if [ "$1" = "run" ]; then
-  if [ -e "{fail_snapshot}" ]; then exit 19; fi
   for argument in "$@"; do
     case "$argument" in
-      *:/snapshot) snapshot="${{argument%:/snapshot}}" ;;
+      *:/snapshot*) echo "writable host snapshot mounts are forbidden" >&2; exit 42 ;;
     esac
   done
   case "$*" in
-    *postgres-data.tar.gz*) printf x > "$snapshot/postgres-data.tar.gz" ;;
-    *qdrant-data.tar.gz*) printf x > "$snapshot/qdrant-data.tar.gz" ;;
+    *" -czf - "*)
+      if [ -e "{fail_snapshot}" ]; then
+        case "$(cat "{fail_snapshot}")" in
+          truncated) printf 'not a gzip archive'; exit 0 ;;
+          second) case "$*" in *"second-project-volume"*) exit 19 ;; esac ;;
+          *) exit 19 ;;
+        esac
+      fi
+      exec tar -C "{payload}" -czf - . ;;
+    *" -tzf -"*) exec tar -tzf - ;;
+    *) echo "unsupported snapshot Docker contract" >&2; exit 43 ;;
   esac
 fi
 '''
@@ -2644,6 +2655,23 @@ fi
     registry.write_text(
         json.dumps({"version": 1, "projects": {project_id: {"root_path": str(project_root)}}})
     )
+    return {
+        "env": env,
+        "log": log,
+        "binaries": binaries,
+        "project_root": project_root,
+        "project_id": project_id,
+        "registry": registry,
+        "fail_adapter": fail_adapter,
+        "fail_snapshot": fail_snapshot,
+    }
+
+
+def test_installer_rebuilds_every_project_stopped_for_an_upgrade_snapshot(tmp_path: Path):
+    fixture = _upgrade_snapshot_installer_fixture(tmp_path)
+    env, log = fixture["env"], fixture["log"]
+    project_root = fixture["project_root"]
+    fail_adapter, fail_snapshot = fixture["fail_adapter"], fixture["fail_snapshot"]
 
     subprocess.run(
         ["node", str(ROOT / "bin/install.mjs"), "--yes", "--only", "codex"],
@@ -2655,6 +2683,20 @@ fi
     commands = log.read_text()
     assert f"dduo-solo-founder stop --project-root {project_root}" in commands
     assert f"dduo-solo-founder start --project-root {project_root} --build" in commands
+    assert ":/snapshot" not in commands
+    snapshots = list((tmp_path / ".config/dduo-solo-founder/upgrade-snapshots").glob("*/manifest.json"))
+    assert len(snapshots) == 1
+    project_snapshot = snapshots[0].parent / fixture["project_id"]
+    manifest = json.loads(project_snapshot.joinpath("manifest.json").read_text())
+    assert len(manifest["archives"]) == 2
+    for archive in manifest["archives"]:
+        path = project_snapshot / archive["archive"]
+        assert sha256(path.read_bytes()).hexdigest() == archive["sha256"]
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert path.stat().st_uid == os.getuid()
+        listed = subprocess.run(["tar", "-tzf", str(path)], check=True, capture_output=True, text=True)
+        assert "artificial-data.txt" in listed.stdout
 
     fail_adapter.touch()
     starts_before = commands.count(f"dduo-solo-founder start --project-root {project_root} --build")
@@ -2690,6 +2732,120 @@ fi
         )
         == starts_before + 1
     )
+
+
+@pytest.mark.parametrize("failure", ["create", "truncated", "stop-with-force"])
+def test_snapshot_failure_preserves_the_installed_runtime_and_restarts_stopped_project(
+    tmp_path: Path, failure: str
+):
+    fixture = _upgrade_snapshot_installer_fixture(tmp_path)
+    if failure == "stop-with-force":
+        failed_stop = tmp_path / "stop-failed-once"
+        for executable in (tmp_path / ".local/share/dduo-solo-founder").rglob("dduo-solo-founder"):
+            if executable.is_file() and "#!/bin/sh" in executable.read_text():
+                executable.write_text(executable.read_text() + (
+                    f'if [ "$1" = "stop" ] && [ ! -e "{failed_stop}" ]; then\n'
+                    f'  touch "{failed_stop}"; exit 19\n'
+                    'fi\n'
+                ))
+    else:
+        fixture["fail_snapshot"].write_text(failure)
+    runtime = tmp_path / ".local/share/dduo-solo-founder/runtime"
+    sentinel = runtime / "preserved-old-runtime"
+    sentinel.write_text("The old runtime must not be replaced after a failed snapshot.")
+    pointer = tmp_path / ".config/dduo-solo-founder/runtime-path"
+    pointer_before = pointer.read_bytes()
+    commands_before = fixture["log"].read_text().splitlines()
+
+    result = subprocess.run(
+        ["node", str(ROOT / "bin/install.mjs"), "--yes", "--headless",
+         *(["--force"] if failure == "stop-with-force" else [])],
+        env=fixture["env"], capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    commands = fixture["log"].read_text().splitlines()[len(commands_before):]
+    root = fixture["project_root"]
+    assert commands.count(f"dduo-solo-founder start --project-root {root} --build") == 1
+    assert not any(command.startswith("uv sync") for command in commands)
+    if failure == "stop-with-force":
+        assert not any(command.startswith("docker run ") for command in commands)
+    assert sentinel.read_text().startswith("The old runtime")
+    assert pointer.read_bytes() == pointer_before
+    snapshots = tmp_path / ".config/dduo-solo-founder/upgrade-snapshots"
+    assert not list(snapshots.glob("*/manifest.json"))
+
+
+@pytest.mark.parametrize("restart_failure", [False, True])
+def test_snapshot_cleanup_failure_does_not_skip_any_stopped_project_restart(
+    tmp_path: Path, restart_failure: bool
+):
+    fixture = _upgrade_snapshot_installer_fixture(tmp_path)
+    project_roots = [fixture["project_root"], tmp_path / "SecondApp"]
+    second_id = "second-app-project"
+    project_roots[1].joinpath(".dduo-solo-founder").mkdir(parents=True)
+    project_roots[1].joinpath(".dduo-solo-founder/project.toml").write_text(
+        f'id = "{second_id}"\nname = "SecondApp"\napi_port = 18003\nweb_port = 20003\n'
+    )
+    fixture["registry"].write_text(json.dumps({"version": 1, "projects": {
+        fixture["project_id"]: {"root_path": str(project_roots[0])},
+        second_id: {"root_path": str(project_roots[1])},
+    }}))
+    second_volume = f"dduo-solo-founder-{sha256(second_id.encode()).hexdigest()[:12]}_"
+    docker = fixture["binaries"] / "docker"
+    docker.write_text(docker.read_text().replace("second-project-volume", second_volume))
+    fixture["fail_snapshot"].write_text("second")
+    preload = tmp_path / "snapshot-cleanup-failure.mjs"
+    preload.write_text(
+        'import fs from "node:fs";\n'
+        'import { syncBuiltinESMExports } from "node:module";\n'
+        'const original = fs.rmSync;\n'
+        'fs.rmSync = (path, options) => {\n'
+        '  if (String(path).includes("/upgrade-snapshots/") && String(path).endsWith(".tmp")) {\n'
+        '    const error = new Error("injected snapshot cleanup permission denied");\n'
+        '    error.code = "EACCES"; throw error;\n'
+        '  }\n'
+        '  return original(path, options);\n'
+        '};\n'
+        'syncBuiltinESMExports();\n'
+    )
+    if restart_failure:
+        # Runtime shims resolve the installed environment rather than the PATH
+        # stub. Make exactly the first restart fail; the second must still run.
+        for executable in (tmp_path / ".local/share/dduo-solo-founder").rglob("dduo-solo-founder"):
+            if executable.is_file() and "#!/bin/sh" in executable.read_text():
+                original = executable.read_text()
+                executable.write_text(original + (
+                    f'if [ "$1" = "start" ] && [ "$3" = "{project_roots[0]}" ]; then exit 31; fi\n'
+                ))
+    runtime = tmp_path / ".local/share/dduo-solo-founder/runtime"
+    sentinel = runtime / "preserved-old-runtime"
+    sentinel.write_text("keep")
+    commands_before = fixture["log"].read_text().splitlines()
+
+    result = subprocess.run(
+        ["node", "--import", str(preload), str(ROOT / "bin/install.mjs"), "--yes", "--headless"],
+        env=fixture["env"], capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    commands = fixture["log"].read_text().splitlines()[len(commands_before):]
+    for root in project_roots:
+        assert f"dduo-solo-founder stop --project-root {root}" in commands
+        assert commands.count(f"dduo-solo-founder start --project-root {root} --build") == 1
+    assert not any(command.startswith("uv sync") for command in commands)
+    assert sentinel.read_text() == "keep"
+    assert "cleanup" in result.stderr.lower()
+    if restart_failure:
+        assert "One or more stopped projects could not be restarted." in result.stderr
+    else:
+        assert "Stopped projects were restarted." in result.stderr
+        assert "could not be restarted" not in result.stderr
+    # Failed cleanup is explicit, and its partial private snapshot is retained
+    # rather than mislabelled as a verified upgrade snapshot.
+    snapshots = tmp_path / ".config/dduo-solo-founder/upgrade-snapshots"
+    assert list(snapshots.glob("*.tmp"))
+    assert not [path for path in snapshots.glob("*/manifest.json") if ".tmp" not in str(path.parent)]
 
 
 @pytest.mark.parametrize("failure", [None, "remove", "foreign", "running", "checksum"])

@@ -291,6 +291,18 @@ it. Background sleep batches at most eight turns and is scheduled after eight
 pending turns, twenty minutes of inactivity, a declared topic boundary, or an
 explicit request.
 
+For `request_sleep`, pass the known `dduo_session_id` as `session_id` when
+targeting this conversation; omitting it can select all project sessions.
+The scheduling call does not upload a new transcript: workers consolidate
+already stored, recordable turns on the configured memory host. Processing
+still sends selected material and relevant context to Codex/Claude and uses
+configured embeddings (OpenAI by default); it may consume subscription usage
+and, with OpenAI embeddings, API credits. Never describe it as
+read-only or as having no external data flow. A native client approval is not
+a TLS or dDuo authentication failure: explain the exact scope, respect the
+decision, and do not switch tools or commands to bypass it. Retry only after
+checking the job's state, not merely because approval took time.
+
 ## Plans and Work are authoritative
 
 Use the shallow execution hierarchy `Epic -> Task`; labels are free-form and
@@ -365,6 +377,16 @@ print an internal ID or UUID unless the user explicitly asks for it or a
 technical diagnosis requires it. After a mutation, give one compact summary of
 what changed, including status, priority, linked Work or next action only when
 meaningful. Do not let remembered conversation silently mutate work state.
+
+Remote dashboard URLs returned by tools include private browser access valid
+for seven days and reusable across visits and browsers. Preserve the entire
+URL in the human-title link: no extra login, confirmation or Setup is needed.
+For any remote dDuo dashboard URL without `access_token` (including injected context), or an expired link, use
+`get_dashboard_link` with the known Work/Plan ID instead of reloading Work.
+These intentionally shared browser links are not vendor or infrastructure
+credentials; never copy their token into Work, artifacts or the manual.
+If link issuance fails after a successful mutation, report the access problem
+separately and never repeat the mutation to obtain a link.
 
 Use dDuo's public MCP tools for briefing, relevant memory, Work, artifacts,
 activity, the project operating manual, memory status, and recovery. Before

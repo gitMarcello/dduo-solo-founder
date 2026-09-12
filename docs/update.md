@@ -43,6 +43,13 @@ snapshot under `~/.config/dduo-solo-founder/upgrade-snapshots/`. This snapshot
 is a local rollback safety net, not a substitute for an off-device encrypted
 backup.
 
+Snapshot archives are created by the installing OS user with mode `0600`.
+Docker reads the stopped source volume read-only and streams the archive to
+that file; it never creates a root-owned file in the host snapshot directory.
+Tar validation and checksums remain mandatory. If a snapshot fails, recovery
+attempts to restart every affected project even if temporary cleanup fails.
+An unsuccessful stop blocks snapshotting, including with `--force`.
+
 Project secrets stay under
 `~/.config/dduo-solo-founder/project-secrets/<project-id>/`. Compatibility
 migrations preserve existing project values and roll back on failure.

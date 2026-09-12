@@ -132,8 +132,9 @@ L'accesso Git va concesso separatamente.
 
 Il manuale autenticato viene precaricato per i guasti; un errore cache avvisa
 senza annullare l'accesso. L'agente apre la dashboard con
-`dduo-solo-founder dashboard --tab tasks --project-root .`, usando un ticket
-browser monouso, non un bearer nell'URL. Vedere [Progetti remoti e team](remote-teams.it.md)
+`dduo-solo-founder dashboard --tab tasks --project-root .`, usando un link
+browser riutilizzabile per sette giorni, mai il bearer permanente nell'URL.
+I link restituiti in chat danno lo stesso accesso diretto. Vedere [Progetti remoti e team](remote-teams.it.md)
 per comandi di hosting, invito e trasferimento.
 
 L'installazione usa le dipendenze bloccate della distribuzione verificata.

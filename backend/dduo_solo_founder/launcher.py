@@ -66,6 +66,7 @@ from dduo_solo_founder.client_installation import (
     resolve_client_installation,
 )
 from dduo_solo_founder.client_http import ProjectHttpClient
+from dduo_solo_founder.dashboard_access import validate_browser_link, with_dashboard_access_token
 from dduo_solo_founder.invitations import (
     InvitationPayloadError,
     create_invitation_bundle,
@@ -3018,7 +3019,7 @@ def open_dashboard_command(
     project_root: Path = typer.Option(Path.cwd(), "--project-root"),
     tab: str = typer.Option("tasks", "--tab"),
 ) -> None:
-    """Open a local dashboard or exchange a remote bearer for a one-time browser ticket."""
+    """Open the dashboard with reusable seven-day access for a remote project."""
     project_root = find_workspace_root(project_root)
     project = load_project(project_root)
     binding = _runtime_binding(project_root, project)
@@ -3028,12 +3029,14 @@ def open_dashboard_command(
         response = _api_request(
             _project_context(project_root, project),
             "POST",
-            f"/projects/{project['id']}/auth/browser-ticket",
+            f"/projects/{project['id']}/auth/browser-link",
             timeout=30,
         )
         base = binding.dashboard_link(tab)
-        separator = "&" if "?" in str(base) else "?"
-        url = f"{base}{separator}{urlencode({'ticket': response['ticket']})}"
+        if base is None:
+            raise RuntimeError("the dashboard address is not configured for this project")
+        token, _expires_at = validate_browser_link(response)
+        url = with_dashboard_access_token(base, token)
     elif str(project.get("deployment") or "local") == "remote":
         gateway = _gateway_project(project["id"])
         if gateway is None:
@@ -3041,15 +3044,16 @@ def open_dashboard_command(
         response = _api_request(
             _project_context(project_root, project),
             "POST",
-            f"/projects/{project['id']}/auth/browser-ticket",
+            f"/projects/{project['id']}/auth/browser-link",
             timeout=30,
         )
-        query = urlencode({"project": project["id"], "tab": tab, "ticket": response["ticket"]})
-        url = f"{gateway['dashboard_url']}/?{query}"
+        query = urlencode({"project": project["id"], "tab": tab})
+        token, _expires_at = validate_browser_link(response)
+        url = with_dashboard_access_token(f"{gateway['dashboard_url']}/?{query}", token)
     else:
         url = project_dashboard_url(project, tab)
     webbrowser.open(url)
-    typer.echo(json.dumps({"opened": True, "url": url.split("ticket=", 1)[0] + ("ticket=<one-time>" if "ticket=" in url else "")}))
+    typer.echo(json.dumps({"opened": True, "url": url.split("access_token=", 1)[0] + ("access_token=<private-seven-day-link>" if "access_token=" in url else "")}))
 
 
 def _project_context(project_root: Path, project: dict) -> dict:

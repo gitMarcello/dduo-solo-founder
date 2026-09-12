@@ -2,7 +2,7 @@
 
 # Memory engine
 
-Technical reference for `v0.2.0-beta.1`.
+Technical reference for `v0.2.0-beta.2`.
 
 The memory engine turns completed conversations into a compact, revisable
 project memory. It is not a transcript RAG and it does not ask the interactive

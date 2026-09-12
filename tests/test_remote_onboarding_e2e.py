@@ -265,7 +265,11 @@ def _test_certificate(directory: Path) -> tuple[Path, Path]:
 @contextmanager
 def _authenticated_server(directory: Path):
     certificate, key = _test_certificate(directory)
-    state: dict[str, object] = {"requests": [], "token": None, "ticket": "browser-ticket"}
+    state: dict[str, object] = {
+        "requests": [], "token": None,
+        "browser_link": "dduo_link_" + "b" * 43,
+        "browser_link_expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, _format: str, *_args: object) -> None:
@@ -325,8 +329,12 @@ def _authenticated_server(directory: Path):
                 return
             if path == f"/api/projects/{PROJECT_ID}/sessions":
                 self._json(200, {"id": "session-smoke"})
-            elif path == f"/api/projects/{PROJECT_ID}/auth/browser-ticket":
-                self._json(200, {"ticket": state["ticket"]})
+            elif path == f"/api/projects/{PROJECT_ID}/auth/browser-link":
+                self._json(200, {
+                    "token": state["browser_link"],
+                    "expires_at": state["browser_link_expires_at"],
+                    "reusable": True,
+                })
             else:
                 self._json(404, {"detail": "unknown test endpoint"})
 
@@ -342,7 +350,7 @@ def _authenticated_server(directory: Path):
             )
             if parsed.path == "/":
                 query = parse_qs(parsed.query)
-                if query.get("ticket") != [state["ticket"]]:
+                if query.get("access_token") != [state["browser_link"]]:
                     self.send_error(401)
                     return
                 payload = b"<!doctype html><title>dDuo remote dashboard</title>"
@@ -618,12 +626,14 @@ anyio.run(smoke)
             ],
             environment,
         )
-        assert "ticket=<one-time>" in dashboard.stdout
-        assert "browser-ticket" not in dashboard.stdout
+        assert "access_token=<private-seven-day-link>" in dashboard.stdout
+        assert server_state["browser_link"] not in dashboard.stdout
         assert browser_log.is_file()
-        dashboard_request = urllib.request.Request(
-            f"{dashboard_url}/?project={PROJECT_ID}&tab=team&ticket={server_state['ticket']}"
+        opened_url = browser_log.read_text(encoding="utf-8").splitlines()[-1]
+        assert opened_url == (
+            f"{dashboard_url}/?project={PROJECT_ID}&tab=team&access_token={server_state['browser_link']}"
         )
+        dashboard_request = urllib.request.Request(opened_url)
         context = ssl.create_default_context(cafile=str(certificate))
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
@@ -640,7 +650,7 @@ anyio.run(smoke)
     assert any(request["path"].endswith("/sessions") for request in authenticated)
     assert any(request["path"].endswith("/briefing") for request in authenticated)
     assert any(request["path"].endswith("/memory-status") for request in authenticated)
-    assert any(request["path"].endswith("/auth/browser-ticket") for request in authenticated)
+    assert any(request["path"].endswith("/auth/browser-link") for request in authenticated)
     if client == "codex":
         client_commands = home.joinpath("client-commands.log").read_text()
         assert "codex login status" in client_commands

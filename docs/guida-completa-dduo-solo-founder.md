@@ -2,7 +2,7 @@
 
 # dDuo Solo Founder: guida completa
 
-Panoramica per `0.2.0-beta.1`. Le guide collegate contengono comandi e procedure
+Panoramica per `0.2.0-beta.2`. Le guide collegate contengono comandi e procedure
 di recupero; il [README](../README.it.md) contiene i prompt da copiare.
 
 ## 1. Il risultato per il founder

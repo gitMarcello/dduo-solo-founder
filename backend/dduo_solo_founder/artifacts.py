@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
 from dduo_solo_founder.config import get_settings
+from dduo_solo_founder.link_privacy import contains_dashboard_access_tokens
 from dduo_solo_founder.models import (
     Artifact,
     Plan,
@@ -64,6 +65,31 @@ async def register_artifact(
     db: AsyncSession, project_id: str, payload: ArtifactCreate
 ) -> tuple[Artifact, bool]:
     content = _decode_content(payload)
+    textual_fields = {
+        "filename": payload.filename,
+        "source_uri": payload.source_uri,
+        "extracted_text": payload.extracted_text,
+        "summary": payload.summary,
+        "metadata": payload.metadata,
+    }
+    # Inspect the textual copy without altering original attachment bytes or
+    # their content hash. This is not a claim to sanitize images/binary formats.
+    content_text = ""
+    if content is not None:
+        encoding = (
+            "utf-32" if content.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"))
+            else "utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff"))
+            else "utf-8"
+        )
+        try:
+            content_text = content.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    if contains_dashboard_access_tokens(textual_fields) or contains_dashboard_access_tokens(content_text):
+        raise ValueError(
+            "artifact contains a private dashboard access link; remove its access_token "
+            "and register the ordinary project/task link instead"
+        )
     digest = _content_hash(payload, content)
     artifact = await db.scalar(
         select(Artifact).where(

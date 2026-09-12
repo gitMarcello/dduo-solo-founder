@@ -1219,6 +1219,53 @@ def test_off_record_capture_survives_offline_spool_and_later_session_reset(monke
     assert "spooled_turns" not in hooks.read_state(path)
 
 
+def test_dashboard_access_link_is_redacted_offline_and_on_replay(monkeypatch, tmp_path):
+    monkeypatch.setattr(hooks, "HOOK_STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(hooks, "load_project", lambda _: project())
+    token = "dduo_link_" + "A" * 43
+    link = f"https://memory.example/?access_token={token}&work=task-one"
+    captured_requests = []
+
+    def offline_after_session(url, **kwargs):
+        captured_requests.append(kwargs.get("json"))
+        if url.endswith("/sessions"):
+            return Response({"id": "session", "off_record": False})
+        if url.endswith("/turns/begin"):
+            raise RuntimeError("offline")
+        raise AssertionError(f"unexpected POST {url}")
+
+    monkeypatch.setattr(hooks.httpx, "post", offline_after_session)
+    hook_input(monkeypatch, {
+        "cwd": str(tmp_path), "session_id": "s1", "turn_id": "t1", "prompt": link,
+    })
+    hooks.user_prompt_submit()
+    path = local_state_path(tmp_path, "codex", "s1")
+    assert token not in path.read_text()
+    assert token not in json.dumps(captured_requests)
+    hook_input(monkeypatch, {
+        "cwd": str(tmp_path), "session_id": "s1", "turn_id": "t1",
+        "assistant_response": f"Open [task]({link})",
+    })
+    hooks.stop()
+    assert token not in path.read_text()
+    assert len(hooks.read_state(path)["spooled_turns"]) == 1
+
+    def recovered(url, **kwargs):
+        captured_requests.append(kwargs.get("json"))
+        if url.endswith("/sessions"):
+            return Response({"id": "session", "off_record": False})
+        if url.endswith("/turns/begin"):
+            return Response({"turn": {"id": "turn"}})
+        if url.endswith("/stop-check"):
+            return Response({"committed": True})
+        raise AssertionError(f"unexpected POST {url}")
+
+    monkeypatch.setattr(hooks.httpx, "post", recovered)
+    assert hooks.flush_spooled_turns(project(), "http://api", "codex") == 1
+    assert token not in json.dumps(captured_requests)
+    assert "spooled_turns" not in hooks.read_state(path)
+
+
 def test_artifact_registration_excludes_secrets_and_retired_hooks_are_absent(
     monkeypatch, tmp_path
 ):

@@ -29,6 +29,12 @@ from dduo_solo_founder.client_support import (
     UnsupportedClientError,
     require_supported_client,
 )
+from dduo_solo_founder.dashboard_access import (
+    map_dashboard_links,
+    validate_browser_link,
+    with_dashboard_access_token,
+)
+from dduo_solo_founder.link_privacy import redact_dashboard_access_tokens, redacted_render_version
 from dduo_solo_founder.manual_cache import load_verified_manual, store_verified_manual
 from dduo_solo_founder.memory_connection import MemoryConnectionChecks
 from dduo_solo_founder.connection_health import (
@@ -80,6 +86,7 @@ _CONNECTION_EXEMPT_TOOLS = {
     "get_memory_status", "list_sleep_jobs",
     # Privacy requests must never wait for a memory-health choice.
     "set_off_record",
+    "get_dashboard_link",
 }
 
 _ACTIVE_MCP_CLIENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -107,6 +114,12 @@ class MCPToolRuntime:
 
 class EmptyInput(BaseModel):
     pass
+
+
+class DashboardLinkInput(BaseModel):
+    tab: Literal["project", "memory", "tasks", "observability", "team", "activity", "backup", "setup"] = "tasks"
+    work_id: str | None = Field(default=None, min_length=1, max_length=100)
+    plan_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class CheckMemoryConnectionInput(BaseModel):
@@ -240,7 +253,12 @@ class MemoryInput(BaseModel):
 
 
 class RetrySleepInput(BaseModel):
-    job_id: str
+    job_id: str = Field(
+        description=(
+            "Existing job ID from list_sleep_jobs in this project. Retries that job, "
+            "not all project sessions; completed, cancelled and running jobs cannot be retried."
+        ),
+    )
 
 
 class ActivateTaskInput(BaseModel):
@@ -283,6 +301,10 @@ class ArtifactInput(BaseModel):
 
 TOOL_MODELS = {
     "health": ("Check dDuo Solo Founder health", EmptyInput),
+    "get_dashboard_link": (
+        "Get a directly usable project dashboard, task or plan link. Remote links include private, reusable seven-day browser access; no separate login or confirmation is needed. Use this to refresh an old link from context.",
+        DashboardLinkInput,
+    ),
     "decline_setup": (
         "Remember the user's explicit choice not to activate memory for this unconfigured folder",
         EmptyInput,
@@ -315,11 +337,31 @@ TOOL_MODELS = {
     "search_memory": ("Search consolidated project memory", SearchInput),
     "get_memory_status": ("Inspect sleep, retrieval, and memory availability", EmptyInput),
     "request_sleep": (
-        "Queue pending turns for consolidation after a topic boundary or when the user asks",
+        "Queue memory consolidation on this project's configured memory host (local or VPS). "
+        "The scheduling POST sends control fields only, not a new chat transcript: it selects "
+        "turns already stored in dDuo, excluding off-record turns. Pass the known session_id "
+        "to target this conversation; omitting it can cover all project sessions for an "
+        "authorized manager/local owner, not just the current chat. Workers then send selected "
+        "stored material and relevant project context to the configured Codex/Claude provider "
+        "and use configured embeddings (OpenAI by default). Processing may consume subscription "
+        "usage and API credits where applicable. This writes "
+        "jobs and may create or revise memories; it is not read-only. Use after a topic "
+        "boundary or a user request; do not retry blindly or bypass a client approval.",
         SleepRequest,
     ),
     "list_sleep_jobs": ("List memory consolidation jobs and failures", ActivityInput),
-    "retry_sleep_job": ("Retry a waiting memory consolidation job", RetrySleepInput),
+    "retry_sleep_job": (
+        "Requeue one existing memory consolidation job on this project's configured memory "
+        "host (local or VPS), after its failure or wait condition has been addressed. The POST "
+        "identifies the job; it does not upload a new chat transcript. Workers process already "
+        "stored material, excluding off-record turns, with relevant project context through "
+        "the configured Codex/Claude provider and configured embeddings (OpenAI by default). "
+        "Processing may consume subscription usage and API credits where applicable, and "
+        "memories may be created or revised. This is a write, not "
+        "a status check. Inspect list_sleep_jobs first; do not retry blindly or bypass a "
+        "client approval.",
+        RetrySleepInput,
+    ),
     "explain_memory": ("Show a memory's complete revision and source provenance", MemoryInput),
     "list_memory_revisions": ("List every revision of one memory", MemoryInput),
     "forget_memory": ("Remove a memory group from active recall", MemoryForget),
@@ -547,8 +589,11 @@ def result(
     text = json.dumps(value, ensure_ascii=False, default=str)
     if api and project_id and tool_name:
         try:
-            estimated_tokens, characters, utf8_bytes = estimated_tokens_for_text(text)
-            encoded = text.encode("utf-8")
+            # The user receives the working URL; persisted context must not
+            # share that user's browser credential with project-memory readers.
+            observed_text = redact_dashboard_access_tokens(text)
+            estimated_tokens, characters, utf8_bytes = estimated_tokens_for_text(observed_text)
+            encoded = observed_text.encode("utf-8")
             references = _task_observability_references(value, tool_name)
             flush_observability_queue(
                 api,
@@ -585,10 +630,13 @@ def result(
                                 "references": references,
                             }
                         ],
-                        "content": text,
+                        "content": observed_text,
                         "content_sha256": hashlib.sha256(encoded).hexdigest(),
                         "producer_version": __version__,
-                        "render_version": MCP_CONTEXT_RENDER_VERSION,
+                        "render_version": (
+                            redacted_render_version(MCP_CONTEXT_RENDER_VERSION)
+                            if observed_text != text else MCP_CONTEXT_RENDER_VERSION
+                        ),
                         "tool_name": tool_name,
                         "occurred_at": datetime.now(timezone.utc).isoformat(),
                     }
@@ -1314,6 +1362,21 @@ def call(
             "dDuo Solo Founder is not configured for this project; run `dduo-solo-founder init` first"
         )
     team_dashboard_url = binding.dashboard_link("team") if binding is not None else None
+    if name == "get_dashboard_link":
+        work_id, plan_id = args.get("work_id"), args.get("plan_id")
+        tab = args.get("tab", "tasks")
+        if work_id and plan_id:
+            raise ValueError("choose a task or a plan, not both")
+        if (work_id or plan_id) and tab != "tasks":
+            raise ValueError("task and plan links require the Work tab")
+        if binding is None:
+            raise ValueError("the dashboard binding is unavailable for this project")
+        url = binding.dashboard_link(tab, work_id=work_id, plan_id=plan_id)
+        if url is None:
+            raise ValueError("the dashboard address is not configured for this project")
+        return {"dashboard_url": url, "response_instruction": (
+            "Return this exact URL as one human-readable Markdown link to the requested destination."
+        )}
     if name == "get_project_briefing":
         path = _path_with_query(
             f"/projects/{project_id}/briefing",
@@ -1653,6 +1716,18 @@ def _sdk_tools() -> list[mcp_types.Tool]:
             name=name,
             description=description,
             inputSchema=_mcp_input_schema(model),
+            # Consolidation is not merely an additive queue write: its workers
+            # can revise existing memories and call external model providers.
+            # Explicit conservative hints describe that effect, not permissions.
+            annotations=(
+                mcp_types.ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                )
+                if name in {"request_sleep", "retry_sleep_job"} else None
+            ),
         )
         for name, (description, model) in TOOL_MODELS.items()
     ]
@@ -1699,6 +1774,7 @@ def _invoke_mcp_tool(
         runtime.plans_dashboard_url,
         runtime.binding,
     )
+    value = _attach_remote_dashboard_access(value, runtime)
     rendered = result(
         value,
         api=runtime.api if runtime.project_id else None,
@@ -1706,6 +1782,50 @@ def _invoke_mcp_tool(
         tool_name=name,
     )
     return value, rendered
+
+
+def _attach_remote_dashboard_access(value: object, runtime: MCPToolRuntime) -> object:
+    """Add one credential per result, only after the requested operation succeeded."""
+    binding = runtime.binding
+    if not binding or not binding.remote or not binding.dashboard_url or not runtime.project_id:
+        return value
+    links: list[str] = []
+    map_dashboard_links(
+        value, binding.dashboard_url, runtime.project_id,
+        lambda url: links.append(url) or url,
+    )
+    if not links:
+        return value
+    try:
+        payload = request(runtime.api, "POST", f"/projects/{runtime.project_id}/auth/browser-link")
+        token, expires_at = validate_browser_link(payload)
+    except Exception:
+        # A task mutation may already have committed. Returning a tool error
+        # here would invite accidental retries of that successful mutation.
+        if not isinstance(value, dict):
+            return value
+        return {**value, "dashboard_access": {"ready": False}, "response_instruction": (
+            str(value.get("response_instruction") or "")
+            + " The requested operation already completed; do not repeat it. "
+            "Browser access could not be added to its links. Explain this separate access problem; "
+            "check the remote plugin version and project authorization, without reconfiguring memory. "
+            "Do not claim these plain links sign the browser in."
+        )}
+    decorated = map_dashboard_links(
+        value, binding.dashboard_url, runtime.project_id,
+        lambda url: with_dashboard_access_token(url, token),
+    )
+    if isinstance(decorated, dict):
+        decorated["dashboard_access"] = {
+            "ready": True, "expires_at": expires_at, "reusable": True, "private": True,
+        }
+        decorated["response_instruction"] = (
+            str(decorated.get("response_instruction") or "")
+            + " Use the returned URL unchanged, including access_token: it opens directly and is "
+            "reusable for seven days unless access is revoked. Do not request another login or "
+            "configuration. This is a private access link: never save its token in Work, artifacts or manuals."
+        )
+    return decorated
 
 
 def _read_connection_health(runtime: MCPToolRuntime) -> dict:

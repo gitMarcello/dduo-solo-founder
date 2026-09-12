@@ -197,19 +197,31 @@ promosso solo se l'ID coincide; un altro progetto o endpoint remoto non viene
 sostituito. Ripetere l'invito è accettato solo con lo stesso token registrato;
 un altro dispositivo riceve conflitto. L'accesso memoria non concede Git.
 
-Aprire la dashboard tramite la CLI:
+Apri dashboard, Task e Piani direttamente dai link restituiti da dDuo in chat.
+Ogni link remoto contiene un token browser privato valido **sette giorni**,
+riutilizzabile in visite e browser diversi, senza altri login o conferme.
+Chiunque lo possieda può accedere a quel progetto con i permessi del membro
+che lo ha generato: non pubblicarlo. Il bearer permanente del dispositivo non
+compare nel link. L'agente può anche aprirlo tramite la CLI:
 
 ```bash
 dduo-solo-founder dashboard --tab tasks --project-root .
 ```
 
-Il bearer viene scambiato con un ticket monouso valido cinque minuti, poi con
-un cookie di sessione progetto `HttpOnly`, `Secure`, `SameSite=Strict` valido
-sette giorni. Revocare un membro revoca dispositivi e sessioni browser. Ogni
+La dashboard scambia automaticamente il token con un cookie di sessione del
+progetto `HttpOnly`, `Secure`, `SameSite=Strict`, poi toglie il token dalla barra
+degli indirizzi. Il link originale in chat resta riutilizzabile fino alla
+scadenza; il cookie non dura oltre. Revocare il membro o il dispositivo
+invalida i suoi link e accessi browser. Alla scadenza chiedi a dDuo un nuovo
+link tramite `get_dashboard_link`, senza riconfigurare il progetto. I vecchi
+ticket monouso rimangono compatibili per i client precedenti. Ogni
 modifica richiede anche il valore CSRF di quella sessione in `X-DDUO-CSRF`,
 conservato solo nello storage browser dell'origine e rimosso a logout o errore
 di autenticazione. Questo separa dashboard su porte diverse dello stesso host,
 dato che i cookie non sono isolati per porta.
+Il logout chiude la sessione browser, non il link riutilizzabile. Il link rimane
+nella chat in cui è stato condiviso; cronologie e log di proxy esterni non sono
+archivi garantiti privi di credenziali.
 
 L'agente esegue i comandi dell'invito; il collaboratore non opera nel terminale.
 Il manuale autenticato viene precaricato; un errore cache è un avviso e viene

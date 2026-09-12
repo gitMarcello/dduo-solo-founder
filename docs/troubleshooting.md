@@ -2,7 +2,7 @@
 
 # Troubleshooting
 
-Troubleshooting for dDuo Solo Founder `0.2.0-beta.1`.
+Troubleshooting for dDuo Solo Founder `0.2.0-beta.2`.
 
 Normal use should require no technical diagnosis. dDuo keeps project work
 available when its configured local or remote memory is temporarily unavailable.
@@ -29,6 +29,25 @@ Claude's native authorization check is unavailable; this does not declare its
 capture broken or verified. If MCP and the Skill were not loaded either, dDuo
 cannot deliver an independent warning. The prompt to choose is model-mediated,
 not a technical lock on the entire coding agent.
+
+## The client asks approval before consolidating remote memory
+
+A native client safety review is separate from dDuo authentication and HTTPS.
+An approval request alone does not mean that the VPS connection is insecure.
+
+`request_sleep` schedules processing of turns already saved in the bound
+project, excluding off-record turns; its scheduling POST does not upload a new
+chat transcript. Pass the known session ID to scope it to that conversation.
+Without it, a manager/local owner can request project-wide consolidation.
+Workers send selected stored material and relevant context to Codex/Claude
+and use configured embeddings (OpenAI by default). Processing may consume
+subscription usage and, with OpenAI embeddings, API credits.
+The operation writes jobs and may revise memories; it is not read-only.
+
+The assistant should explain that scope and respect the native approval or
+denial. Do not disable TLS validation, weaken permissions, or reroute the same
+command to avoid a denied approval. These clearer tool descriptions reduce
+ambiguity, but cannot guarantee that the client will never request approval.
 
 ## Setup did not finish
 
@@ -179,10 +198,13 @@ it cannot enroll a different device. No invitation grants Git or VPS access.
 
 ## The remote dashboard says unauthorized
 
-Open it with `dduo-solo-founder dashboard --tab tasks`. The CLI sends the
-permanent bearer only to the API, obtains a five-minute one-time ticket and
-opens the page. That ticket becomes a project-specific secure browser cookie.
-Do not manually append a device token to a URL. If access was revoked, the
+Use the complete link dDuo returned in chat: its browser token is reusable for
+seven days, including from a new browser. A plain URL without that token needs
+an existing browser session. For an old or expired link, ask the agent for a new
+one (`get_dashboard_link`), or use `dduo-solo-founder dashboard --tab tasks`.
+The page signs in automatically and keeps the requested Task/Plan selected.
+No project reconfiguration is needed. Do not manually append a device token to
+a URL. If access was revoked, the
 infrastructure manager must issue a new authorized membership rather than
 sharing another person's token.
 

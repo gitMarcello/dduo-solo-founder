@@ -2,7 +2,7 @@
 
 # Motore della memoria
 
-Riferimento tecnico per `v0.2.0-beta.1`.
+Riferimento tecnico per `v0.2.0-beta.2`.
 
 Il motore trasforma le conversazioni concluse in una memoria di progetto
 compatta e revisionabile. Non usa la trascrizione come archivio RAG e non chiede

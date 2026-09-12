@@ -177,6 +177,7 @@ from dduo_solo_founder.team import (
     authenticate_team_request,
     browser_cookie_name,
     browser_csrf_secret,
+    browser_link_secret,
     browser_secret,
     hash_secret,
     invitation_code,
@@ -1843,6 +1844,7 @@ async def exchange_team_invite(
 async def create_browser_ticket(
     project_id: str,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_session),
 ):
     principal = principal_from_request(request)
@@ -1865,11 +1867,50 @@ async def create_browser_ticket(
     )
     db.add(ticket)
     await db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return team_envelope(
         principal,
         ticket=raw_ticket,
         expires_at=ticket.expires_at,
         one_time=True,
+    )
+
+
+@app.post("/projects/{project_id}/auth/browser-link")
+async def create_browser_link(
+    project_id: str,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_session),
+):
+    """Issue a project/device-scoped reusable browser link, never an API bearer."""
+    principal = principal_from_request(request)
+    if (
+        principal.trusted_local
+        or principal.anonymous
+        or principal.access_token_id is None
+        or principal.member_id is None
+        or principal.browser_session_id is not None
+    ):
+        raise HTTPException(403, "a project bearer token is required")
+    now = utcnow()
+    raw_link = browser_link_secret()
+    link = BrowserAuthCredential(
+        project_id=project_id,
+        member_id=principal.member_id,
+        access_token_id=principal.access_token_id,
+        # Both ingress forms use the existing ticket storage contract. The
+        # complete hashed prefix binds reusable links to dduo_link_ only.
+        kind="ticket",
+        secret_hash=hash_secret(raw_link),
+        created_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    db.add(link)
+    await db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return team_envelope(
+        principal, token=raw_link, expires_at=link.expires_at, reusable=True,
     )
 
 
@@ -1891,12 +1932,16 @@ async def exchange_browser_ticket(
     )
     if ticket is None:
         raise HTTPException(404, "browser ticket not found")
+    # The full token, including its prefix, matched the persisted hash above.
+    # A caller cannot convert a legacy ticket/session by changing its prefix.
+    reusable = payload.ticket.startswith("dduo_link_")
     expires_at = ticket.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if ticket.consumed_at is not None:
         raise HTTPException(409, "browser ticket already consumed")
-    if ticket.revoked_at is not None or expires_at <= utcnow():
+    now = utcnow()
+    if ticket.revoked_at is not None or expires_at <= now:
         raise HTTPException(410, "browser ticket expired")
     token = await db.get(TeamAccessToken, ticket.access_token_id)
     member = await db.get(TeamMember, ticket.member_id)
@@ -1907,10 +1952,12 @@ async def exchange_browser_ticket(
         or member.status != "active"
         or token.project_id != project_id
         or member.project_id != project_id
+        or token.member_id != member.id
     ):
         raise HTTPException(401, "project access was revoked")
     raw_session = browser_secret()
     raw_csrf = browser_csrf_secret()
+    session_expires_at = min(now + timedelta(days=7), expires_at) if reusable else now + timedelta(days=7)
     browser_session = BrowserAuthCredential(
         project_id=project_id,
         member_id=member.id,
@@ -1918,15 +1965,17 @@ async def exchange_browser_ticket(
         kind="session",
         secret_hash=hash_secret(raw_session),
         csrf_secret_hash=hash_secret(raw_csrf),
-        expires_at=utcnow() + timedelta(days=7),
+        expires_at=session_expires_at,
     )
     db.add(browser_session)
-    ticket.consumed_at = utcnow()
+    if not reusable:
+        ticket.consumed_at = now
     await db.commit()
+    response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
         key=browser_cookie_name(project_id),
         value=raw_session,
-        max_age=7 * 24 * 60 * 60,
+        max_age=max(0, int((session_expires_at - now).total_seconds())),
         httponly=True,
         secure=True,
         samesite="strict",
@@ -1950,6 +1999,7 @@ async def logout_browser_session(
     response: Response,
     db: AsyncSession = Depends(get_session),
 ):
+    response.headers["Cache-Control"] = "no-store"
     principal = principal_from_request(request)
     if principal.browser_session_id:
         browser_session = await db.get(BrowserAuthCredential, principal.browser_session_id)

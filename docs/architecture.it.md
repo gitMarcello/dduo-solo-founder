@@ -2,7 +2,7 @@
 
 # Architettura
 
-Riferimento tecnico per `v0.2.0-beta.1`.
+Riferimento tecnico per `v0.2.0-beta.2`.
 
 dDuo Solo Founder è una memoria operativa isolata per progetto, condivisa tra
 Codex e Claude Code. Può risiedere sul computer o su una VPS autenticata; la

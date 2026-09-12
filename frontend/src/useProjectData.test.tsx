@@ -77,6 +77,30 @@ function projectData(attachments: TaskAttachment[] = []): ProjectData {
 }
 
 describe('useProjectData', () => {
+  it('drops unauthorized stale data and stops background retries until an explicit refresh', async () => {
+    const load = vi.spyOn(api, 'loadProject').mockResolvedValue(projectData());
+    window.history.replaceState(null, '', '/?project=project-1&tab=tasks&work=task-1');
+    const { result } = renderHook(() => useProjectData());
+    await waitFor(() => expect(result.current.data?.project.id).toBe('project-1'));
+    load.mockRejectedValueOnce(new ApiError('expired', 401));
+    await act(async () => {
+      await result.current.refresh({ background: true });
+    });
+    expect(result.current.data).toBeNull();
+    expect(result.current.accessDenied).toBe(true);
+    await act(async () => {
+      await result.current.refresh({ background: true });
+    });
+    expect(load).toHaveBeenCalledTimes(2);
+    load.mockResolvedValue(projectData());
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(result.current.accessDenied).toBe(false);
+    expect(result.current.data?.project.id).toBe('project-1');
+    expect(window.location.search).toBe('?project=project-1&tab=tasks&work=task-1');
+  });
   beforeEach(() => {
     localStorage.clear();
     window.history.replaceState(null, '', '/');
