@@ -290,7 +290,9 @@ non richiede un archivio di trasferimento.
    esegui `dduo-solo-founder remote-host --public-ip <PUBLIC-IP>`. Il clone
    resta in sola lettura e restituisce una `activation_receipt` firmata. Non
    avanza ancora la generazione e non diventa autorevole.
-3. Verifica la risposta `destination_ready` e HTTPS sul nuovo endpoint. Le
+3. Verifica `destination_ready` e `https_verified: true`. `remote-host` valida
+   il certificato pubblico e il percorso HTTPS completo fino al progetto esatto
+   in sola lettura: la sola ricevuta firmata o il gateway avviato non bastano. Le
    credenziali remote esistenti possono aprire la dashboard in sola lettura;
    per un progetto prima locale, il primo gestore viene creato solo al
    completamento. Se interrompi qui il trasferimento, elimina il clone ed
@@ -300,9 +302,15 @@ non richiede un archivio di trasferimento.
 
    ```bash
    dduo-solo-founder remote-transfer-retire \
-     --activation-receipt '<ACTIVATION_RECEIPT>' --yes
+     --activation-receipt '<ACTIVATION_RECEIPT>' \
+     --destination-api-url '<URL-API-HTTPS>' \
+     --yes
    ```
 
+   Usa l'URL API esatto stampato da `remote-host`. Prima della finalizzazione,
+   la sorgente verifica autonomamente certificato, percorso HTTPS e identità
+   del trasferimento, senza disabilitare TLS né seguire redirect. Se la verifica
+   fallisce, ritiro e pulizia dei volumi non iniziano.
    La ricevuta lega crittograficamente progetto, generazione congelata,
    sorgente, destinazione e nonce. La sorgente diventa irreversibilmente
    `transferred`, salva una `finalization_receipt` prima della pulizia ed

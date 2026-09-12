@@ -1611,7 +1611,9 @@ def _validate_final_transfer_backup(
 ) -> dict:
     if not isinstance(backup, dict):
         raise RuntimeError("final transfer backup returned an invalid response")
-    manifest = backup.get("manifest_json")
+    # The backup API serializes SQL column names: ``manifest_json`` is only
+    # the ORM attribute, while the public response contract is ``manifest``.
+    manifest = backup.get("manifest")
     credentials = manifest.get("credentials") if isinstance(manifest, dict) else None
     dduo_secrets = (
         credentials.get("dduo_secrets") if isinstance(credentials, dict) else None
@@ -1744,14 +1746,27 @@ def _claim_remote_authority(
     finalization_receipt: str | None = None,
 ) -> dict:
     """Initialize a new node or activate a database restored from transfer-pending state."""
-    context = _project_context(project_root, project)
-    status = _api_request(
-        context,
-        "GET",
-        f"/projects/{project['id']}/authority",
+    runtime = load_project_secrets(project["id"], include_legacy=False)
+    authority_secret = runtime.get("DDUO_NODE_AUTHORITY_SECRET", "")
+    if not authority_secret:
+        raise RuntimeError("node authority credential is unavailable")
+    node_id = remote_node_id()
+    client = _launcher_client(_runtime_binding(project_root, project))
+    headers = {
+        **_host_control_headers(project),
+        "X-DDUO-Authority": authority_secret,
+    }
+    # A restored local project has no remote team token yet. Inspect this exact
+    # node via the restricted control plane, without bootstrapping a writer.
+    response = client.request(
+        "POST",
+        f"/projects/{project['id']}/authority/status",
+        headers=headers,
+        json={"node_id": node_id},
         timeout=30,
     )
-    node_id = remote_node_id()
+    response.raise_for_status()
+    status = response.json()
     if status["state"] == "active" and status.get("node_id") == node_id:
         (project_root / DISASTER_RECOVERY_FILE).unlink(missing_ok=True)
         return status
@@ -1777,18 +1792,10 @@ def _claim_remote_authority(
         if status["state"] == "transfer_pending"
         else "initialize"
     )
-    runtime = load_project_secrets(project["id"], include_legacy=False)
-    authority_secret = runtime.get("DDUO_NODE_AUTHORITY_SECRET", "")
-    if not authority_secret:
-        raise RuntimeError("node authority credential is unavailable")
-    binding = _runtime_binding(project_root, project)
-    response = _launcher_client(binding).request(
+    response = client.request(
         "POST",
         f"/projects/{project['id']}/authority/{operation}",
-        headers={
-            **_host_control_headers(project),
-            "X-DDUO-Authority": authority_secret,
-        },
+        headers=headers,
         json={
             "node_id": node_id,
             "expected_generation": int(status["generation"]),
@@ -1806,6 +1813,84 @@ def _claim_remote_authority(
     if result.get("state") == "active" and result.get("writable") is True:
         (project_root / DISASTER_RECOVERY_FILE).unlink(missing_ok=True)
     return result
+
+
+def _verify_destination_https(
+    api_url: str,
+    project_id: str,
+    authority: dict,
+    activation_receipt: str,
+    authority_secret: str,
+) -> str:
+    """Prove the public TLS route reaches this exact read-only transfer target.
+
+    The receipt alone proves no network reachability. Re-issue it through the
+    idempotent activation endpoint, verifying TLS and every transfer claim.
+    Never follow redirects carrying the node credential to a different origin.
+    """
+    canonical_api = canonical_https_url(api_url, field="destination_api_url")
+    if not isinstance(activation_receipt, str):
+        raise RuntimeError("destination readiness proof is malformed")
+    try:
+        proof = verify_authority_receipt(
+            activation_receipt, authority_secret, expected_kind="destination_ready"
+        )
+    except AuthorityReceiptError as exc:
+        raise RuntimeError("destination readiness proof is unauthenticated") from exc
+    if (
+        proof.project_id != project_id
+        or authority.get("project_id") != project_id
+        # Finalize may have committed while its response/marker was lost. The
+        # source stays retired; re-check the destination before replaying the
+        # idempotent finalization. It must still be read-only below.
+        or authority.get("state") not in {"transfer_pending", "transferred"}
+        or authority.get("writable") is not False
+        or authority.get("node_id") != proof.source_node_id
+        or authority.get("target_node_id") != proof.target_node_id
+        or type(authority.get("generation")) is not int
+        or authority["generation"] != proof.source_generation
+    ):
+        raise RuntimeError("destination readiness proof does not match this transfer")
+    try:
+        response = httpx.post(
+            f"{canonical_api}/projects/{project_id}/authority/activate",
+            headers={"X-DDUO-Authority": authority_secret},
+            json={
+                "node_id": proof.target_node_id,
+                "expected_generation": proof.source_generation,
+            },
+            verify=True,
+            trust_env=False,
+            follow_redirects=False,
+            timeout=httpx.Timeout(30, connect=10),
+        )
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, dict) or not isinstance(result.get("activation_receipt"), str):
+            raise ValueError("invalid authority response")
+        echoed = verify_authority_receipt(
+            result.get("activation_receipt", ""),
+            authority_secret,
+            expected_kind="destination_ready",
+        )
+        if (
+            echoed != proof
+            or result.get("project_id") != project_id
+            or result.get("node_id") != proof.source_node_id
+            or result.get("target_node_id") != proof.target_node_id
+            or type(result.get("generation")) is not int
+            or result["generation"] != proof.source_generation
+            or result.get("state") != "transfer_pending"
+            or result.get("phase") != "destination_ready"
+            or result.get("writable") is not False
+        ):
+            raise ValueError("HTTPS endpoint does not match the read-only transfer target")
+    except (httpx.HTTPError, ValueError, AuthorityReceiptError) as exc:
+        raise RuntimeError(
+            "destination HTTPS verification failed; source retirement is fenced. "
+            "Check the public API URL, certificate, firewall and restored node, then retry"
+        ) from exc
+    return canonical_api
 
 
 @app.command("remote-host")
@@ -1907,9 +1992,18 @@ def remote_host(
         ),
     }
     if authority.get("phase") == "destination_ready":
+        _verify_destination_https(
+            gateway["api_url"], project["id"], authority,
+            authority["activation_receipt"],
+            load_project_secrets(project["id"], include_legacy=False).get(
+                "DDUO_NODE_AUTHORITY_SECRET", ""
+            ),
+        )
+        payload["https_verified"] = True
         payload["activation_receipt"] = authority.get("activation_receipt")
         payload["next"] = (
-            "on the old source run remote-transfer-retire with this activation receipt; "
+            "on the old source run remote-transfer-retire with this activation receipt "
+            f"and --destination-api-url {gateway['api_url']} (HTTPS is checked again there); "
             "then rerun remote-host here with the returned finalization receipt"
         )
     typer.echo(json.dumps(payload, indent=2))
@@ -2069,6 +2163,10 @@ def remote_transfer_retire(
         "--activation-receipt",
         help="Signed destination-readiness proof returned by remote-host on the new node.",
     ),
+    destination_api_url: str | None = typer.Option(
+        None, "--destination-api-url",
+        help="Public HTTPS API URL of the restored destination; checked before finalization.",
+    ),
     yes: bool = typer.Option(False, "--yes"),
 ) -> None:
     """Verify destination readiness, retire the source, and return its completion proof."""
@@ -2116,11 +2214,19 @@ def remote_transfer_retire(
             raise typer.BadParameter(
                 "--activation-receipt is required before the old authority can be retired"
             )
+        if not destination_api_url:
+            raise typer.BadParameter(
+                "--destination-api-url is required to verify HTTPS before source retirement"
+            )
         authority = _api_request(
             _project_context(project_root, project),
             "GET",
             f"/projects/{project['id']}/authority",
             timeout=30,
+        )
+        _verify_destination_https(
+            destination_api_url, project["id"], authority,
+            activation_receipt, authority_secret,
         )
         finalized = _api_request(
             _project_context(project_root, project),

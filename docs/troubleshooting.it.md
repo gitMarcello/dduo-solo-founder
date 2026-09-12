@@ -205,7 +205,11 @@ destinazione ripristinata resta in sola lettura e restituisce una
 `activation_receipt`. Se rinunci a quel punto, elimina il clone ed esegui
 `remote-transfer-cancel --new-node-not-activated` sulla sorgente. Per
 proseguire, passa la ricevuta alla sorgente con
-`remote-transfer-retire --activation-receipt '<RECEIPT>' --yes`. La sorgente
+`remote-transfer-retire --activation-receipt '<RECEIPT>' --destination-api-url '<URL-API-HTTPS>' --yes`,
+usando l'URL API stampato da `remote-host`. La sorgente verifica certificato
+pubblico e percorso HTTPS completo fino al progetto esatto in sola lettura
+prima di finalizzare; un errore blocca ritiro e pulizia dei volumi. Non
+disabilitare TLS per aggirare errori di certificato o routing. La sorgente
 restituisce una `finalization_receipt`: usala sulla destinazione con
 `remote-host --public-ip <PUBLIC-IP> --finalization-receipt '<RECEIPT>'`
 per rendere scrivibile la nuova generazione.

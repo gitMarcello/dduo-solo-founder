@@ -95,6 +95,7 @@ from dduo_solo_founder.schemas import (
     AuthorityFinalizeRequest,
     AuthorityRecoveryRequest,
     AuthorityNodeRequest,
+    AuthorityStatusRequest,
     BackupRestoreRegister,
     BrowserSessionExchange,
     CompactionRecord,
@@ -1123,6 +1124,37 @@ async def get_project_authority(
     project = await db.get(Project, project_id)
     if project is None:
         raise HTTPException(404, "project not found")
+    return _authority_payload(project)
+
+
+@app.post("/projects/{project_id}/authority/status")
+async def inspect_host_project_authority(
+    project_id: str,
+    payload: AuthorityStatusRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+):
+    """Read the host control plane before this restored project has a manager.
+
+    This is deliberately not a bearer-auth fallback on the generic GET route.
+    The project-specific authority credential, configured stack identity, and
+    current node must all agree. No team membership or writable state is created.
+    """
+    require_node_authority(request)
+    host_project_id = os.getenv("BACKUP_PROJECT_ID", "").strip()
+    if not host_project_id:
+        raise HTTPException(503, "memory host project identity is unavailable")
+    if not secrets.compare_digest(host_project_id, project_id):
+        raise HTTPException(404, "project not found")
+    _require_current_authority_node(payload.node_id)
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "project not found")
+    if (
+        project.authority_state == "transfer_pending"
+        and project.authority_target_node_id != payload.node_id
+    ):
+        raise HTTPException(409, "restored project is bound to another target node")
     return _authority_payload(project)
 
 

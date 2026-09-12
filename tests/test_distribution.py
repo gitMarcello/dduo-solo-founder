@@ -569,7 +569,17 @@ def test_authority_transfer_runbooks_use_receipts_and_remote_rebind():
     recovery = " ".join((ROOT / "docs/backup-and-recovery.md").read_text().split())
 
     assert "--new-node-verified" not in security
-    assert "remote-transfer-retire --activation-receipt '<RECEIPT>' --yes" in security
+    assert (
+        "remote-transfer-retire --activation-receipt '<RECEIPT>' "
+        "--destination-api-url '<HTTPS-API-URL>' --yes"
+    ) in security
+    for relative in (
+        "SECURITY.it.md", "docs/backup-and-recovery.md", "docs/backup-and-recovery.it.md",
+        "docs/remote-teams.md", "docs/remote-teams.it.md",
+        "docs/troubleshooting.md", "docs/troubleshooting.it.md",
+    ):
+        document = (ROOT / relative).read_text()
+        assert "--destination-api-url" in document, relative
     assert "first local-to-VPS move" in recovery
     assert "manager token returned after step 5" in recovery
     assert "`remote-bind --replace-existing`" in recovery

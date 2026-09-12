@@ -22,6 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ID = "99999999-9999-4999-8999-999999999991"
 AUTHORITY_SECRET = "ci-authority-secret-with-enough-entropy-for-handoff"
 EXPECTED_SCHEMA_REVISION = "f3b4c5d6e7f8"
+# Synthetic credentials exist only for this disposable smoke. The destination
+# starts without any registered manager; install these request headers only
+# after real application bootstrap has succeeded.
+MANAGER_TOKEN = "dduo_dev_" + "m" * 43
+REQUEST_HEADERS: dict[str, dict[str, str]] = {}
 
 
 def run(command: list[str], *, environment: dict[str, str] | None = None) -> None:
@@ -59,7 +64,11 @@ def response(
     headers: dict[str, str] | None = None,
 ) -> tuple[int, dict]:
     encoded = json.dumps(body).encode("utf-8") if body is not None else None
-    outgoing = {"Content-Type": "application/json", **(headers or {})}
+    outgoing = {
+        "Content-Type": "application/json",
+        **REQUEST_HEADERS.get(base, {}),
+        **(headers or {}),
+    }
     try:
         with urlopen(
             Request(f"{base}{path}", data=encoded, headers=outgoing, method=method),
@@ -361,7 +370,9 @@ def wait_for_health(base: str) -> None:
     raise RuntimeError(f"API did not become healthy: {base}")
 
 
-def stack_environment(root: Path, *, api_port: int, web_port: int, node_id: str) -> dict[str, str]:
+def stack_environment(
+    root: Path, *, api_port: int, web_port: int, node_id: str, auth_required: bool = False
+) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(
         {
@@ -380,6 +391,7 @@ def stack_environment(root: Path, *, api_port: int, web_port: int, node_id: str)
             "DDUO_SOLO_FOUNDER_PROJECT_ID": PROJECT_ID,
             "DDUO_NODE_ID": node_id,
             "DDUO_NODE_AUTHORITY_SECRET": AUTHORITY_SECRET,
+            "DDUO_AUTH_REQUIRED": "true" if auth_required else "false",
         }
     )
     return environment
@@ -401,6 +413,61 @@ def prepare_files(root: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def restore_frozen_clone(
+    source_name: str,
+    destination_name: str,
+    source_env: dict[str, str],
+    destination_env: dict[str, str],
+    override: Path,
+    dump: Path,
+    destination: str,
+) -> None:
+    """Copy the actual PG dump; never manufacture the destination authority row."""
+    compose(
+        source_name,
+        source_env,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "pg_dump",
+        "-Fc",
+        "-U",
+        "dduo_solo_founder",
+        "-d",
+        "dduo_solo_founder",
+        "-f",
+        "/tmp/authority.dump",
+    )
+    compose(source_name, source_env, override, "cp", "postgres:/tmp/authority.dump", str(dump))
+    compose(destination_name, destination_env, override, "stop", "api")
+    compose(destination_name, destination_env, override, "up", "-d", "--wait", "postgres")
+    compose(
+        destination_name, destination_env, override, "cp", str(dump), "postgres:/tmp/authority.dump"
+    )
+    compose(
+        destination_name,
+        destination_env,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "pg_restore",
+        "--exit-on-error",
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "--no-privileges",
+        "-U",
+        "dduo_solo_founder",
+        "-d",
+        "dduo_solo_founder",
+        "/tmp/authority.dump",
+    )
+    compose(destination_name, destination_env, override, "up", "-d", "qdrant", "api")
+    wait_for_health(destination)
 
 
 def main() -> None:
@@ -434,6 +501,8 @@ def main() -> None:
                     "  api:",
                     f"    image: {api_image}",
                     "    build: null",
+                    "    environment:",
+                    "      DDUO_AUTH_REQUIRED: ${DDUO_AUTH_REQUIRED}",
                 )
             )
             + "\n",
@@ -443,7 +512,11 @@ def main() -> None:
             source_root, api_port=18766, web_port=20766, node_id="node-old"
         )
         destination_env = stack_environment(
-            destination_root, api_port=18767, web_port=20767, node_id="node-new"
+            destination_root,
+            api_port=18767,
+            web_port=20767,
+            node_id="node-new",
+            auth_required=True,
         )
         source = "http://127.0.0.1:18766"
         destination = "http://127.0.0.1:18767"
@@ -467,6 +540,10 @@ def main() -> None:
                 f"/projects/{PROJECT_ID}/authority/initialize",
                 body={"node_id": "node-old", "expected_generation": 1},
                 headers=authority_headers,
+            )
+            require(
+                request(source, "GET", f"/projects/{PROJECT_ID}/team")["members"] == [],
+                "source fixture must not have a pre-existing remote manager",
             )
             seeded = seed_sprint_lifecycle(source)
             durable = database_snapshot(source_name, source_env, override)
@@ -510,77 +587,84 @@ def main() -> None:
                 "?expected_generation=1&target_node_id=node-new",
             )
 
-            compose(
-                source_name,
-                source_env,
-                override,
-                "exec",
-                "-T",
-                "postgres",
-                "pg_dump",
-                "-Fc",
-                "-U",
-                "dduo_solo_founder",
-                "-d",
-                "dduo_solo_founder",
-                "-f",
-                "/tmp/authority.dump",
-            )
             dump = root / "authority.dump"
-            compose(
+            restore_frozen_clone(
                 source_name,
+                destination_name,
                 source_env,
-                override,
-                "cp",
-                "postgres:/tmp/authority.dump",
-                str(dump),
-            )
-            compose(
-                destination_name,
                 destination_env,
                 override,
-                "up",
-                "-d",
-                "--wait",
-                "postgres",
+                dump,
+                destination,
             )
-            compose(
-                destination_name,
-                destination_env,
-                override,
-                "cp",
-                str(dump),
-                "postgres:/tmp/authority.dump",
+            authority_path = f"/projects/{PROJECT_ID}/authority"
+            # Prove real authentication, including the original bootstrap
+            # deadlock: a generated-but-unregistered manager token stays 401.
+            request(destination, "GET", authority_path, expected=401)
+            request(
+                destination,
+                "GET",
+                authority_path,
+                headers={"Authorization": f"Bearer {MANAGER_TOKEN}"},
+                expected=401,
             )
-            compose(
-                destination_name,
-                destination_env,
-                override,
-                "exec",
-                "-T",
-                "postgres",
-                "pg_restore",
-                "--exit-on-error",
-                "--clean",
-                "--if-exists",
-                "--no-owner",
-                "--no-privileges",
-                "-U",
-                "dduo_solo_founder",
-                "-d",
-                "dduo_solo_founder",
-                "/tmp/authority.dump",
+            destination_status = request(
+                destination,
+                "POST",
+                authority_path + "/status",
+                body={"node_id": "node-new"},
+                headers=authority_headers,
             )
-            compose(
-                destination_name,
-                destination_env,
-                override,
-                "up",
-                "-d",
-                "qdrant",
-                "api",
+            require(destination_status["writable"] is False, "restored clone must be read-only")
+            require(
+                destination_status["state"] == "transfer_pending", "restore lost transfer fence"
             )
-            wait_for_health(destination)
+            bootstrap_payload = {
+                "display_name": "Isolated smoke manager",
+                "device_id": "node-new",
+                "device_label": "Smoke infrastructure control",
+                "device_token": MANAGER_TOKEN,
+            }
+            request(
+                destination,
+                "POST",
+                f"/projects/{PROJECT_ID}/team/bootstrap",
+                body=bootstrap_payload,
+                headers=authority_headers,
+                expected=409,
+            )
+            request(
+                destination,
+                "POST",
+                f"/projects/{PROJECT_ID}/tasks",
+                body={"title": "node secret must not authorize application writes"},
+                headers=authority_headers,
+                expected=401,
+            )
+            request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-new", "expected_generation": 1},
+                headers={"X-DDUO-Authority": "wrong-secret"},
+                expected=401,
+            )
+            request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-wrong", "expected_generation": 1},
+                headers=authority_headers,
+                expected=409,
+            )
+            request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-new", "expected_generation": 2},
+                headers=authority_headers,
+                expected=409,
+            )
             activated = request(
                 destination,
                 "POST",
@@ -590,12 +674,92 @@ def main() -> None:
             )
             if activated.get("writable") is not False:
                 raise RuntimeError("destination became writable before source finalization")
+            abandoned_receipt = activated["activation_receipt"]
+            cancelled = request(
+                source,
+                "POST",
+                authority_path + "/cancel?expected_generation=1",
+            )
+            require(cancelled["writable"] is True, "cancel did not restore source writes")
+            session = request(
+                source,
+                "POST",
+                f"/projects/{PROJECT_ID}/sessions",
+                body={"client": "codex", "external_id": "after-cancel"},
+            )
+            require(bool(session.get("id")), "source write after cancellation failed")
+            clone_after_cancel = request(
+                destination,
+                "POST",
+                authority_path + "/status",
+                body={"node_id": "node-new"},
+                headers=authority_headers,
+            )
+            require(clone_after_cancel["writable"] is False, "abandoned clone became writable")
+            request(
+                source,
+                "POST",
+                authority_path + "/prepare?expected_generation=1&target_node_id=node-new",
+            )
+            request(
+                source,
+                "POST",
+                authority_path + "/finalize?expected_generation=1",
+                body={"activation_receipt": abandoned_receipt},
+                expected=409,
+            )
+            restore_frozen_clone(
+                source_name,
+                destination_name,
+                source_env,
+                destination_env,
+                override,
+                dump,
+                destination,
+            )
+            activated = request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-new", "expected_generation": 1},
+                headers=authority_headers,
+            )
+            require(
+                activated["activation_receipt"] != abandoned_receipt,
+                "new prepare reused the old nonce",
+            )
+            altered = activated["activation_receipt"].split(".")
+            altered[2] = ("B" if altered[2][0] == "A" else "A") + altered[2][1:]
+            request(
+                source,
+                "POST",
+                authority_path + "/finalize?expected_generation=1",
+                body={"activation_receipt": ".".join(altered)},
+                expected=409,
+            )
             finalized = request(
                 source,
                 "POST",
                 f"/projects/{PROJECT_ID}/authority/finalize?expected_generation=1",
                 body={"activation_receipt": activated["activation_receipt"]},
             )
+            request(source, "POST", authority_path + "/cancel?expected_generation=1", expected=409)
+            require(finalized["writable"] is False, "finalized source remained writable")
+            request(
+                source,
+                "POST",
+                f"/projects/{PROJECT_ID}/tasks",
+                body={"title": "finalized source must already be fenced"},
+                expected=409,
+            )
+            ready = request(
+                destination,
+                "POST",
+                authority_path + "/status",
+                body={"node_id": "node-new"},
+                headers=authority_headers,
+            )
+            require(ready["writable"] is False, "destination wrote before completion receipt")
             completed = request(
                 destination,
                 "POST",
@@ -609,6 +773,26 @@ def main() -> None:
             )
             if completed.get("state") != "active" or completed.get("generation") != 2:
                 raise RuntimeError("destination did not own the next authority generation")
+            team = request(
+                destination,
+                "POST",
+                f"/projects/{PROJECT_ID}/team/bootstrap",
+                body=bootstrap_payload,
+                headers=authority_headers,
+            )
+            require(len(team["members"]) == 1, "first bootstrap must create exactly one manager")
+            REQUEST_HEADERS[destination] = {"Authorization": f"Bearer {MANAGER_TOKEN}"}
+            authenticated = request(destination, "GET", f"/projects/{PROJECT_ID}/team")
+            require(
+                authenticated["current_member"]["project_id"] == PROJECT_ID,
+                "manager token did not authenticate to the restored project",
+            )
+            request(
+                destination,
+                "GET",
+                "/projects/99999999-9999-4999-8999-999999999992/team",
+                expected=404,
+            )
             require(
                 database_snapshot(destination_name, destination_env, override) == durable,
                 "PostgreSQL restore changed Sprint, task, plan, revision, or receipt rows",
@@ -638,7 +822,10 @@ def main() -> None:
             )
             if created.get("title") != "destination is authoritative":
                 raise RuntimeError("destination write verification failed")
-            print("Authority E2E passed: one source frozen, one restored destination activated.")
+            print(
+                "Authority E2E passed: authenticated destination without prior manager; "
+                "cancel/resume, stale and altered receipt rejection, and one writable authority."
+            )
         except Exception:
             for name, environment in (
                 (source_name, source_env),

@@ -110,5 +110,10 @@ failure; review the named project and archive before approving it.
 Authority transfer freezes the old project before the final backup. Cancelling
 requires the explicit `--new-node-not-activated` attestation. Once the restored
 node reports `destination_ready` and its HTTPS endpoint is verified, retire the
-old node with `remote-transfer-retire --activation-receipt '<RECEIPT>' --yes`.
+old node with
+`remote-transfer-retire --activation-receipt '<RECEIPT>' --destination-api-url '<HTTPS-API-URL>' --yes`,
+using the exact public API URL printed by `remote-host`. Before finalizing,
+the source independently checks the TLS certificate, complete HTTPS API route
+and transfer identity. TLS failures block retirement and volume cleanup; do
+not disable certificate verification to proceed.
 Never cancel after the source has returned its finalization receipt.

@@ -99,7 +99,15 @@ dduo-solo-founder remote-host \
    after the authority is writable;
 9. registers the project with the shared Caddy gateway and prints its HTTPS
    API, dashboard, assigned port and firewall instruction for permanent `443`
-   access plus the assigned project port when different.
+   access plus the assigned project port when different. For a prepared
+   transfer, it verifies the public TLS certificate and the complete HTTPS
+   route to that exact read-only project before reporting `https_verified`.
+
+The first manager need not exist on a restored local project. Its host reads
+`POST /projects/{id}/authority/status` using the project-scoped node-authority
+secret before attempting activation. This narrowly scoped control-plane check
+does not register a team member, grant ordinary API access or make the
+destination writable; manager bootstrap still waits for transfer completion.
 
 The VPS account must support persistent user services. If `remote-host` asks
 for linger, run the printed one-time command as an administrator, for example
@@ -298,11 +306,18 @@ Moving a local or remote project is a controlled full-recovery operation:
    `transfer_pending` and read-only. The command exposes the read-only
    dashboard and returns a signed `activation_receipt` proving that this exact
    project, source generation, target node and one-time transfer nonce were
-   restored together.
-3. Verify that `remote-host` reports `destination_ready` and that the HTTPS
-   health endpoint is reachable. A team restored from an existing remote host
-   can also inspect the read-only dashboard with its existing credentials; a
+   restored together, only after its public HTTPS check succeeds.
+3. Check that `remote-host` reports `destination_ready` and
+   `https_verified: true`. Starting Docker/Caddy or obtaining a signed receipt
+   alone does not prove public HTTPS works. The automatic check validates the
+   certificate for the configured host/IP and calls the API through the public
+   gateway, checking the same project, source generation, target node and
+   signed receipt while the destination remains read-only. TLS verification
+   is never disabled and redirects are not followed. A team restored from an
+   existing remote host can also inspect the read-only dashboard with its existing credentials; a
    local project intentionally creates its first manager only after completion.
+   If HTTPS fails, fix the certificate, firewall or routing and retry; the
+   source is not retired and the restored destination stays read-only.
    If the move is abandoned now, discard that read-only clone and run
    `dduo-solo-founder remote-transfer-cancel --new-node-not-activated` on the
    source. The old authority becomes writable and the old receipt can no longer
@@ -311,10 +326,18 @@ Moving a local or remote project is a controlled full-recovery operation:
 
    ```bash
    dduo-solo-founder remote-transfer-retire \
-     --activation-receipt '<ACTIVATION_RECEIPT>' --yes
+     --activation-receipt '<ACTIVATION_RECEIPT>' \
+     --destination-api-url '<HTTPS-API-URL>' \
+     --yes
    ```
 
-   The source verifies the signed receipt, marks itself irrevocably
+   Use the exact API URL printed by `remote-host`. `--destination-api-url` is
+   required for initial retirement: the source independently repeats the
+   certificate, HTTPS route and transfer-identity checks immediately before
+   finalization. A failure prevents retirement and volume cleanup; cancellation
+   is still possible before finalization. A verified local retirement marker
+   allows a cleanup retry without repeating a completed transfer.
+   After successful verification, the source marks itself irrevocably
    `transferred`, durably saves the returned `finalization_receipt`, then deletes
    only that project's old Docker volumes and unregisters its gateway route.
    Cleanup can be retried without contacting the deleted database.

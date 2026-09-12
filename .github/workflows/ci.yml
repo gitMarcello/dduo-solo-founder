@@ -55,6 +55,10 @@ jobs:
         run: >-
           pytest -q --no-cov
           tests/test_authority_receipts.py
+          tests/test_transfer_backup_contract.py
+          tests/test_transfer_auth_bootstrap.py
+          tests/test_transfer_bind.py
+          tests/test_transfer_https.py
           tests/test_backup_config.py
           tests/test_bridge_auth.py
           tests/test_client_binding.py

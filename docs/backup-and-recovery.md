@@ -294,7 +294,9 @@ does not require a transfer archive.
    then run `dduo-solo-founder remote-host --public-ip <PUBLIC-IP>`. The restored
    clone stays read-only and returns a signed `activation_receipt`; it does not
    advance the generation or become authoritative yet.
-3. Verify the `destination_ready` response and HTTPS health on the new endpoint.
+3. Verify `destination_ready` and `https_verified: true`. `remote-host` validates
+   the public certificate and the complete HTTPS route to this exact read-only
+   project; a signed receipt or a running gateway alone is insufficient.
    Existing remote-team credentials can inspect the read-only dashboard; a
    local project defers first-manager bootstrap until completion. If the move
    is abandoned at this phase, discard the clone and run
@@ -304,9 +306,15 @@ does not require a transfer archive.
 
    ```bash
    dduo-solo-founder remote-transfer-retire \
-     --activation-receipt '<ACTIVATION_RECEIPT>' --yes
+     --activation-receipt '<ACTIVATION_RECEIPT>' \
+     --destination-api-url '<HTTPS-API-URL>' \
+     --yes
    ```
 
+   Use the exact API URL printed by `remote-host`. Before finalization, the
+   source independently verifies the certificate, HTTPS route and transfer
+   identity, without disabling TLS verification or following redirects. If
+   verification fails, retirement and volume cleanup do not begin.
    It cryptographically binds the acknowledgement to the project, frozen
    generation, source, target and transfer nonce. The source becomes
    irreversibly `transferred`, persists a `finalization_receipt` before cleanup,

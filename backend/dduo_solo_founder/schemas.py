@@ -115,6 +115,14 @@ class BrowserSessionExchange(BaseModel):
     )
 
 
+class AuthorityStatusRequest(BaseModel):
+    """Read a host's project authority before a manager token exists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 class AuthorityNodeRequest(BaseModel):
     node_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     expected_generation: int = Field(default=1, ge=1)

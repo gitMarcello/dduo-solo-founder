@@ -38,6 +38,7 @@ AUTH_EXEMPT_SUFFIXES = ("/auth/exchange", "/auth/browser-session")
 BOOTSTRAP_SUFFIX = "/team/bootstrap"
 AUTHORITY_SECRET_SUFFIXES = (
     BOOTSTRAP_SUFFIX,
+    "/authority/status",
     "/authority/initialize",
     "/authority/activate",
     "/authority/complete",
@@ -528,6 +529,7 @@ async def authenticate_team_request(
             path = request.url.path
             authority_control = path.endswith(
                 (
+                    "/authority/status",
                     "/authority/prepare",
                     "/authority/activate",
                     "/authority/complete",

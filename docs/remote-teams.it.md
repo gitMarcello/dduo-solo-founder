@@ -91,7 +91,16 @@ bootstrap contiene il token iniziale del gestore. Il comando:
 8. Crea il primo **Gestore dell'infrastruttura** solo quando l'autorità è
    scrivibile e il bootstrap è necessario.
 9. Registra il progetto in Caddy e stampa API, dashboard, porta HTTPS e regole
-   firewall: `443` permanente e l'eventuale porta aggiuntiva del progetto.
+   firewall: `443` permanente e l'eventuale porta aggiuntiva del progetto. Per
+   un trasferimento preparato verifica certificato TLS pubblico e percorso
+   HTTPS completo fino al progetto esatto in sola lettura, prima di riportare
+   `https_verified`.
+
+Il primo gestore non deve già esistere nel progetto locale ripristinato. Il suo
+host legge `POST /projects/{id}/authority/status` con il segreto d'autorità
+isolato del progetto prima dell'attivazione. Questo controllo circoscritto non
+registra membri, non concede accesso alle normali API e non rende scrivibile la
+destinazione: il bootstrap del gestore attende comunque il completamento.
 
 L'account VPS deve poter eseguire servizi utente persistenti. Se viene richiesto
 linger, l'agente autorizzato esegue l'operazione amministrativa indicata, per
@@ -252,10 +261,19 @@ Un progetto locale o remoto esistente si sposta tramite full recovery:
 2. Ripristinare esattamente quell'archivio sulla destinazione con la recovery
    key separata, poi eseguire `remote-host`. Il database resta in sola lettura
    e il comando restituisce `activation_receipt`, firmata e legata a progetto,
-   generazione sorgente, nodo destinatario e nonce monouso.
-3. Verificare `destination_ready` e l'endpoint HTTPS health pubblico. Un team
-   già remoto può usare le credenziali ripristinate per leggere la dashboard;
+   generazione sorgente, nodo destinatario e nonce monouso, soltanto dopo il
+   superamento della verifica HTTPS pubblica.
+3. Verificare che `remote-host` riporti `destination_ready` e
+   `https_verified: true`. Il solo avvio di Docker/Caddy o una ricevuta firmata
+   non dimostrano che HTTPS pubblico funzioni. Il controllo automatico valida
+   il certificato per l'host/IP configurato e raggiunge l'API attraverso il
+   gateway pubblico, verificando progetto, generazione sorgente, nodo
+   destinatario e ricevuta firmata, con destinazione ancora in sola lettura.
+   La verifica TLS non viene mai disabilitata e i redirect non vengono seguiti.
+   Un team già remoto può usare le credenziali ripristinate per leggere la dashboard;
    il primo gestore di un progetto locale nasce solo dopo il completamento.
+   Se HTTPS fallisce, correggere certificato, firewall o routing e riprovare:
+   la sorgente non è ritirata e la destinazione ripristinata resta in sola lettura.
    Per rinunciare ora, eliminare il clone in sola lettura e sulla sorgente usare
    `dduo-solo-founder remote-transfer-cancel --new-node-not-activated`.
    La sorgente torna scrivibile e la ricevuta precedente non è più valida.
@@ -263,10 +281,19 @@ Un progetto locale o remoto esistente si sposta tramite full recovery:
 
    ```bash
    dduo-solo-founder remote-transfer-retire \
-     --activation-receipt '<RICEVUTA-ATTIVAZIONE>' --yes
+     --activation-receipt '<RICEVUTA-ATTIVAZIONE>' \
+     --destination-api-url '<URL-API-HTTPS>' \
+     --yes
    ```
 
-   La sorgente verifica la ricevuta, diventa irrevocabilmente `transferred`,
+   Usare l'URL API esatto stampato da `remote-host`. `--destination-api-url` è
+   obbligatorio per il primo ritiro: la sorgente ripete autonomamente i
+   controlli di certificato, percorso HTTPS e identità del trasferimento subito
+   prima della finalizzazione. Un errore impedisce ritiro e pulizia dei volumi;
+   prima della finalizzazione è ancora possibile annullare. Un marker locale
+   di ritiro verificato consente di riprovare la sola pulizia senza ripetere il
+   trasferimento già finalizzato.
+   Superate le verifiche, la sorgente diventa irrevocabilmente `transferred`,
    salva durevolmente `finalization_receipt`, poi elimina soltanto i propri
    vecchi volumi e la route gateway. La pulizia si può ripetere senza database.
 5. Sulla destinazione ripetere `remote-host` con

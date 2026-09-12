@@ -2857,20 +2857,32 @@ def test_remote_authority_preflights_fail_closed_before_mutation(monkeypatch, tm
     with pytest.raises(RuntimeError, match="verified full-project-v2 restore"):
         launcher._verified_recovery_marker(tmp_path, "p1")
 
+    monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+    with pytest.raises(RuntimeError, match="authority credential is unavailable"):
+        launcher._claim_remote_authority(tmp_path, project)
+
     monkeypatch.setattr(
         launcher,
-        "_api_request",
-        lambda *args, **kwargs: {"state": "uninitialized", "generation": 0},
+        "load_project_secrets",
+        lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
     )
-    monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            assert method == "POST" and path == "/projects/p1/authority/status"
+            assert kwargs["headers"]["X-DDUO-Authority"] == "authority-secret"
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {"state": "uninitialized", "generation": 0},
+            )
+
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
     with pytest.raises(RuntimeError, match="transfer-pending"):
         launcher._claim_remote_authority(
             tmp_path,
             project,
             finalization_receipt="receipt",
         )
-    with pytest.raises(RuntimeError, match="authority credential is unavailable"):
-        launcher._claim_remote_authority(tmp_path, project)
 
 
 def test_login_codex_imports_only_the_explicitly_selected_profile(monkeypatch, tmp_path):
@@ -3246,6 +3258,10 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
         },
     )
     monkeypatch.setattr(launcher, "write_caddyfile", lambda: None)
+    probes = []
+    monkeypatch.setattr(
+        launcher, "_verify_destination_https", lambda *args: probes.append(args)
+    )
     monkeypatch.setattr(
         launcher,
         "_gateway_compose",
@@ -3262,6 +3278,19 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
     assert '"manager_bootstrapped": false' in result.stdout
     assert "dduo_authority_v1.ready.signed" in result.stdout
     assert "authority_handoff_pending" in result.stdout
+    assert probes[0][0] == "https://8.8.8.8/api"
+    assert '"https_verified": true' in result.stdout
+
+    monkeypatch.setattr(
+        launcher, "_verify_destination_https",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("TLS verification failed")),
+    )
+    failed = runner.invoke(
+        launcher.app,
+        ["remote-host", "--public-ip", "8.8.8.8", "--project-root", str(tmp_path)],
+    )
+    assert failed.exit_code != 0
+    assert "activation_receipt" not in failed.stdout
 
 
 def test_remote_transfer_prepare_freezes_before_requesting_final_backup(monkeypatch, tmp_path):
@@ -3305,7 +3334,7 @@ def test_remote_transfer_prepare_freezes_before_requesting_final_backup(monkeypa
                 "id": "backup-final",
                 "status": "verified",
                 "archive_name": "final.dduobackup",
-                "manifest_json": {
+                "manifest": {
                     "schema_version": 2,
                     "recovery_contract": "full-project-v2",
                     "project": {"id": "p1"},
@@ -3358,7 +3387,7 @@ def test_final_transfer_backup_must_contain_the_current_authority_secret():
     backup = {
         "status": "verified",
         "archive_name": "final.dduobackup",
-        "manifest_json": {
+        "manifest": {
             "schema_version": 2,
             "recovery_contract": "full-project-v2",
             "project": {"id": "p1"},
@@ -3462,8 +3491,9 @@ def test_remote_transfer_cancel_requires_explicit_pre_activation_attestation(
     ]
 
 
+@pytest.mark.parametrize("lose_finalization_ack", [False, True])
 def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, lose_finalization_ack,
 ):
     project = {"id": "p1", "name": "TeamApp", "api_port": 18001, "web_port": 20001}
     monkeypatch.setattr(launcher, "find_workspace_root", lambda _: tmp_path)
@@ -3481,14 +3511,26 @@ def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
     )
     proof, finalized_payload = finalization_proof()
     calls = []
+    source_state = "transfer_pending"
+    pending_ack_loss = False
 
     def request(_context, method, path, **kwargs):
+        nonlocal source_state, pending_ack_loss
         calls.append((method, path, kwargs.get("json_body")))
         if path.endswith("/authority"):
-            return {"state": "transfer_pending", "generation": 5}
+            return {"state": source_state, "generation": 5}
+        source_state = "transferred"
+        if pending_ack_loss:
+            pending_ack_loss = False
+            raise RuntimeError("connection lost after database committed finalization")
         return {**finalized_payload, "finalization_receipt": proof}
 
     monkeypatch.setattr(launcher, "_api_request", request)
+    def probe(*args):
+        assert args[0] == "https://destination.example/api"
+        calls.append(("HTTPS", args[0], None))
+
+    monkeypatch.setattr(launcher, "_verify_destination_https", probe)
     compose_calls = []
     def compose_after_receipt_is_durable(*args, **kwargs):
         compose_calls.append(args[1:])
@@ -3526,12 +3568,53 @@ def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
     assert refused.exit_code != 0
     assert calls == [] and compose_calls == []
 
+    missing_url = runner.invoke(
+        launcher.app,
+        ["remote-transfer-retire", "--activation-receipt", "ready", "--yes",
+         "--project-root", str(tmp_path)],
+    )
+    assert missing_url.exit_code != 0
+    assert calls == [] and compose_calls == []
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            launcher, "_verify_destination_https",
+            lambda *args: (_ for _ in ()).throw(RuntimeError("TLS verification failed")),
+        )
+        failed = runner.invoke(
+            launcher.app,
+            ["remote-transfer-retire", "--activation-receipt", "ready", "--yes",
+             "--destination-api-url", "https://destination.example/api",
+             "--project-root", str(tmp_path)],
+        )
+        assert failed.exit_code != 0
+        assert calls == [("GET", "/projects/p1/authority", None)]
+        assert compose_calls == []
+        assert not (tmp_path / launcher.RETIRED_NODE_FILE).exists()
+    calls.clear()
+
+    if lose_finalization_ack:
+        pending_ack_loss = True
+        lost = runner.invoke(
+            launcher.app,
+            ["remote-transfer-retire", "--activation-receipt", "ready", "--yes",
+             "--destination-api-url", "https://destination.example/api",
+             "--project-root", str(tmp_path)],
+        )
+        assert lost.exit_code != 0
+        assert source_state == "transferred"
+        assert compose_calls == []
+        assert not (tmp_path / launcher.RETIRED_NODE_FILE).exists()
+        calls.clear()
+
     retired = runner.invoke(
         launcher.app,
         [
             "remote-transfer-retire",
             "--activation-receipt",
             "dduo_authority_v1.ready.signed",
+            "--destination-api-url",
+            "https://destination.example/api",
             "--yes",
             "--project-root",
             str(tmp_path),
@@ -3540,6 +3623,7 @@ def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
     assert retired.exit_code == 0
     assert calls == [
         ("GET", "/projects/p1/authority", None),
+        ("HTTPS", "https://destination.example/api", None),
         (
             "POST",
             "/projects/p1/authority/finalize?expected_generation=5",
@@ -3810,6 +3894,11 @@ def test_claim_remote_authority_is_idempotent_and_rejects_live_or_retired_source
 ):
     project = {"id": "p1", "api_port": 18001, "web_port": 20001}
     monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+    monkeypatch.setattr(
+        launcher,
+        "load_project_secrets",
+        lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
+    )
     statuses = iter(
         [
             {"state": "active", "generation": 2, "node_id": "node-new"},
@@ -3817,7 +3906,15 @@ def test_claim_remote_authority_is_idempotent_and_rejects_live_or_retired_source
             {"state": "transferred", "generation": 2, "node_id": "node-old"},
         ]
     )
-    monkeypatch.setattr(launcher, "_api_request", lambda *args, **kwargs: next(statuses))
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            assert method == "POST" and path == "/projects/p1/authority/status"
+            assert kwargs["json"] == {"node_id": "node-new"}
+            assert kwargs["headers"]["X-DDUO-Authority"] == "authority-secret"
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: next(statuses))
+
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
     current = launcher._claim_remote_authority(tmp_path, project)
     assert current["node_id"] == "node-new"
     with pytest.raises(RuntimeError, match="another node"):
@@ -3837,11 +3934,6 @@ def test_claim_remote_authority_uses_secret_for_expected_generation(
     monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
     monkeypatch.setattr(
         launcher,
-        "_api_request",
-        lambda *args, **kwargs: {"state": state, "generation": 7, "node_id": None},
-    )
-    monkeypatch.setattr(
-        launcher,
         "load_project_secrets",
         lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
     )
@@ -3850,29 +3942,36 @@ def test_claim_remote_authority_uses_secret_for_expected_generation(
         "binding_from_project",
         lambda *args, **kwargs: SimpleNamespace(remote=False),
     )
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"state": "active", "generation": 8, "node_id": "node-new"}
+    captured = []
+    clients = []
 
     class Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
         def request(self, method, path, **kwargs):
-            captured.update(method=method, path=path, **kwargs)
-            return Response()
+            captured.append({"method": method, "path": path, **kwargs})
+            payload = (
+                {"state": state, "generation": 7, "node_id": None}
+                if path.endswith("/status")
+                else {"state": "active", "generation": 8, "node_id": "node-new"}
+            )
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
 
-    monkeypatch.setattr(launcher, "ProjectHttpClient", Client)
+    def client(binding):
+        instance = Client()
+        clients.append(instance)
+        return instance
+
+    monkeypatch.setattr(launcher, "_launcher_client", client)
     result = launcher._claim_remote_authority(tmp_path, project)
     assert result["state"] == "active"
-    assert captured["path"] == f"/projects/p1/authority/{operation}"
-    assert captured["headers"]["X-DDUO-Authority"] == "authority-secret"
-    assert captured["json"] == {"node_id": "node-new", "expected_generation": 7}
+    assert len(clients) == 1
+    assert len(captured) == 2
+    assert captured[0]["path"] == "/projects/p1/authority/status"
+    assert captured[0]["json"] == {"node_id": "node-new"}
+    assert captured[1]["path"] == f"/projects/p1/authority/{operation}"
+    assert captured[1]["json"] == {"node_id": "node-new", "expected_generation": 7}
+    for request in captured:
+        assert request["method"] == "POST"
+        assert request["headers"]["X-DDUO-Authority"] == "authority-secret"
 
 
 def test_claim_remote_authority_completes_only_with_source_receipt(monkeypatch, tmp_path):
@@ -3880,15 +3979,6 @@ def test_claim_remote_authority_completes_only_with_source_receipt(monkeypatch, 
     monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
     monkeypatch.setattr(
         launcher,
-        "_api_request",
-        lambda *args, **kwargs: {
-            "state": "transfer_pending",
-            "generation": 7,
-            "node_id": "node-old",
-        },
-    )
-    monkeypatch.setattr(
-        launcher,
         "load_project_secrets",
         lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
     )
@@ -3897,41 +3987,71 @@ def test_claim_remote_authority_completes_only_with_source_receipt(monkeypatch, 
         "binding_from_project",
         lambda *args, **kwargs: SimpleNamespace(remote=False),
     )
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "state": "active",
-                "generation": 8,
-                "node_id": "node-new",
-                "writable": True,
-            }
+    captured = []
 
     class Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
         def request(self, method, path, **kwargs):
-            captured.update(method=method, path=path, **kwargs)
-            return Response()
+            captured.append({"method": method, "path": path, **kwargs})
+            payload = (
+                {"state": "transfer_pending", "generation": 7, "node_id": "node-old"}
+                if path.endswith("/status")
+                else {
+                    "state": "active", "generation": 8, "node_id": "node-new", "writable": True
+                }
+            )
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
 
-    monkeypatch.setattr(launcher, "ProjectHttpClient", Client)
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
     result = launcher._claim_remote_authority(
         tmp_path,
         project,
         finalization_receipt="dduo_authority_v1.final.signed",
     )
     assert result["state"] == "active"
-    assert captured["path"] == "/projects/p1/authority/complete"
-    assert captured["json"] == {
+    assert len(captured) == 2
+    assert captured[0]["path"] == "/projects/p1/authority/status"
+    assert captured[0]["json"] == {"node_id": "node-new"}
+    assert captured[1]["path"] == "/projects/p1/authority/complete"
+    assert captured[1]["json"] == {
         "node_id": "node-new",
         "expected_generation": 7,
         "finalization_receipt": "dduo_authority_v1.final.signed",
     }
+
+
+def test_claim_remote_authority_can_read_status_without_a_registered_manager_bearer(
+    monkeypatch, tmp_path
+):
+    project = {"id": "p1", "api_port": 18001, "web_port": 20001}
+    monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+    monkeypatch.setattr(
+        launcher,
+        "load_project_secrets",
+        lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_api_request",
+        lambda *args, **kwargs: pytest.fail("manager-only GET must not precede authority bootstrap"),
+    )
+    captured = []
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            assert method == "POST"
+            assert kwargs["headers"] == {"X-DDUO-Authority": "authority-secret"}
+            captured.append(path)
+            payload = (
+                {"state": "transfer_pending", "generation": 7, "node_id": "node-old"}
+                if path.endswith("/status")
+                else {"state": "transfer_pending", "generation": 7, "writable": False}
+            )
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
+    result = launcher._claim_remote_authority(tmp_path, project)
+    assert captured == ["/projects/p1/authority/status", "/projects/p1/authority/activate"]
+    assert result["writable"] is False
 
 
 def backup_archive(tmp_path: Path, *, qdrant: bool = True):

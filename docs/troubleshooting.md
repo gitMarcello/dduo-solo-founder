@@ -195,7 +195,11 @@ stays read-only and prints an `activation_receipt`. If the move is abandoned at
 that point, discard the clone and run
 `remote-transfer-cancel --new-node-not-activated` on the old host. If the move
 should continue, pass that receipt to
-`remote-transfer-retire --activation-receipt '<RECEIPT>' --yes` on the source.
+`remote-transfer-retire --activation-receipt '<RECEIPT>' --destination-api-url '<HTTPS-API-URL>' --yes`
+on the source, using the API URL printed by `remote-host`. The source verifies
+the public certificate and complete HTTPS route to the exact read-only project
+before finalizing; a failure blocks retirement and volume cleanup. Do not
+disable TLS verification to bypass a certificate or routing error.
 It prints a `finalization_receipt`; use that on the destination with
 `remote-host --public-ip <PUBLIC-IP> --finalization-receipt '<RECEIPT>'` to make the new generation
 writable.
