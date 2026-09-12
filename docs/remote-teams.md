@@ -3,8 +3,9 @@
 # Remote projects and teams
 
 Each local or remote project keeps its own PostgreSQL, Qdrant, API, worker,
-dashboard and credentials. A VPS may host multiple isolated stacks; only Caddy
-is shared, terminating HTTPS and routing to each project's loopback dashboard.
+dashboard and credentials. A VPS may host multiple isolated stacks. Caddy and
+the host agent are shared; the agent authenticates each project separately.
+Caddy terminates HTTPS and routes to each project's loopback dashboard.
 
 The first project registered on a VPS normally receives HTTPS port `443`.
 Further projects receive a stable free port in the range `24443`-`25442`.
@@ -92,7 +93,8 @@ dduo-solo-founder remote-host \
 4. creates the remote authentication, session and node-authority secrets;
 5. preserves the project's existing isolated stack and rotates its internal
    PostgreSQL password before remote services adopt the new secret;
-6. enables authenticated remote mode for API and worker;
+6. enables authenticated remote mode for API and worker, then checks the
+   authenticated host-agent connection from both containers before claiming authority;
 7. claims this VPS as the authoritative memory node, or emits a read-only
    readiness receipt when completing a prepared transfer;
 8. bootstraps the first **Gestore dell'infrastruttura** when necessary and only
@@ -102,6 +104,8 @@ dduo-solo-founder remote-host \
    access plus the assigned project port when different. For a prepared
    transfer, it verifies the public TLS certificate and the complete HTTPS
    route to that exact read-only project before reporting `https_verified`.
+   Startup retries temporary connection/gateway failures within a 60-second
+   retry window; invalid certificates, authorization and identity remain blocking.
 
 The first manager need not exist on a restored local project. Its host reads
 `POST /projects/{id}/authority/status` using the project-scoped node-authority
@@ -117,6 +121,21 @@ project when this prerequisite is missing. The private bridge token and dynamic
 port live only in a `0600` environment file; neither is embedded in the unit or
 its process arguments. `bridge-stop` stops the unit without disabling boot, and
 the next dDuo start reactivates it.
+
+The firewall must allow traffic **from the project's actual Docker network to
+the host agent's TCP port**, not from the Internet. The current port is in
+`~/.config/dduo-solo-founder/bridge/port`; do not print `agent.env`, which also
+contains the token. An authorized operator checks the network, interface and
+port before adding a narrow persistent rule, without disabling the firewall
+or removing other projects' rules. Recheck the network after a restore that
+recreates it and persistence after a VPS reboot. dDuo does not change the
+firewall automatically.
+
+The container check only reads authenticated bridge status; it neither runs
+sleep nor changes data. `container_bridge_verified: true` confirms this path,
+not successful consolidation. On failure, `remote-host` identifies the
+container and category (network, credentials, configuration or protocol)
+without proceeding to the authority claim. Repair the cause and rerun it.
 
 On first bootstrap it also prints one initial manager device token once. A
 private pending record is written before the server mutation and removed only
@@ -318,10 +337,15 @@ Moving a local or remote project is a controlled full-recovery operation:
    local project intentionally creates its first manager only after completion.
    If HTTPS fails, fix the certificate, firewall or routing and retry; the
    source is not retired and the restored destination stays read-only.
+   A temporary failure does not require cancellation or another backup: keep
+   the source frozen and clone read-only, then rerun `remote-host`. Do not
+   proceed without a successful check or bypass identity failures.
    If the move is abandoned now, discard that read-only clone and run
    `dduo-solo-founder remote-transfer-cancel --new-node-not-activated` on the
    source. The old authority becomes writable and the old receipt can no longer
    complete a later transfer.
+   After cancellation, a new transfer needs a new prepare, final backup and
+   restore; do not reuse archives or receipts from the cancelled freeze.
 4. To commit the move, run this on the old source:
 
    ```bash

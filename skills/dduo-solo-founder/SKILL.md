@@ -194,8 +194,16 @@ Preserve a verified Full Recovery Bundle and its separate recovery key, execute
 the documented two-phase transfer, verify the new HTTPS node before retiring
 the old isolated stack, then bind the manager checkout to the new endpoint.
 Never delete the source before the signed destination proof has been verified.
+For a temporary network or gateway-startup failure before finalization, pause
+the handoff, repair the cause and retry while the source stays frozen and the
+destination read-only; do not automatically cancel or start a new backup.
+Verify the host-agent connection from both project containers and public HTTPS;
+host-local health alone is insufficient. Keep the agent port private to the
+project's actual Docker network. Follow the retry and firewall guidance in
+`docs/remote-teams.md` (Italian: `docs/remote-teams.it.md`).
 If the move is abandoned before finalization, cancel it and discard the
-read-only destination clone.
+read-only destination clone. After cancellation, a new transfer requires a
+new prepare, final archive and restore; old receipts cannot be reused.
 
 After a completed VPS/IP change, rebind an already-authorized checkout with
 `remote-rebind`. Ask only for the project ID and new API/dashboard endpoints;

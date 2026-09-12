@@ -472,6 +472,9 @@ def test_compose_loads_environment_without_overwriting_process(monkeypatch, tmp_
     assert captured["env"]["OPENAI_API_KEY"] == "project-key"
     assert captured["env"]["EMBEDDING_MODEL"] == "model"
     assert captured["args"][-1] == "ps"
+    assert "timeout" not in captured
+    launcher.compose({"id": "p1", "api_port": 1, "web_port": 2}, "ps", timeout=12)
+    assert captured["timeout"] == 12
 
 
 def test_launcher_small_fail_closed_branches(monkeypatch, tmp_path):
@@ -2220,6 +2223,10 @@ def test_remote_host_orchestrates_isolated_stack_and_gateway(monkeypatch, tmp_pa
     monkeypatch.setattr(launcher, "ensure_remote_runtime_secrets", lambda _: None)
     phases = []
     monkeypatch.setattr(
+        launcher, "_require_remote_bridge_connectivity",
+        lambda *args: phases.append("container-bridge"),
+    )
+    monkeypatch.setattr(
         launcher,
         "_prepare_remote_database",
         lambda _root, _project, password: phases.append(("database", password)),
@@ -2272,7 +2279,22 @@ def test_remote_host_orchestrates_isolated_stack_and_gateway(monkeypatch, tmp_pa
     assert '"firewall_ports": [' in result.stdout
     assert "443" in result.stdout and "24443" in result.stdout
     assert "keep TCP 443 open permanently" in result.stdout
-    assert phases == [("database", "safe-password"), "claim", "bootstrap"]
+    assert phases == [("database", "safe-password"), "container-bridge", "claim", "bootstrap"]
+    assert '"container_bridge_verified": true' in result.stdout
+
+    # A healthy host-side agent cannot certify the container network path.
+    phases.clear()
+    monkeypatch.setattr(
+        launcher, "_require_remote_bridge_connectivity",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("container cannot reach host")),
+    )
+    failed = runner.invoke(
+        launcher.app,
+        ["remote-host", "--public-ip", "8.8.8.8", "--project-root", str(tmp_path)],
+    )
+    assert failed.exit_code != 0
+    assert phases == [("database", "safe-password")]
+    assert "owner-token" not in failed.stdout
 
 
 def test_remote_host_refuses_promotion_without_reboot_safe_bridge(monkeypatch, tmp_path):
@@ -3225,6 +3247,7 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
     monkeypatch.setattr(launcher, "_prepare_remote_database", lambda *args: None)
     monkeypatch.setattr(launcher, "set_local_deployment_mode", lambda *args: hosted)
     monkeypatch.setattr(launcher, "_restart_remote_stack", lambda *args: None)
+    monkeypatch.setattr(launcher, "_require_remote_bridge_connectivity", lambda *args: None)
     monkeypatch.setattr(
         launcher,
         "_claim_remote_authority",
@@ -3260,7 +3283,7 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
     monkeypatch.setattr(launcher, "write_caddyfile", lambda: None)
     probes = []
     monkeypatch.setattr(
-        launcher, "_verify_destination_https", lambda *args: probes.append(args)
+        launcher, "_verify_destination_https", lambda *args, **kwargs: probes.append((args, kwargs))
     )
     monkeypatch.setattr(
         launcher,
@@ -3278,12 +3301,13 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
     assert '"manager_bootstrapped": false' in result.stdout
     assert "dduo_authority_v1.ready.signed" in result.stdout
     assert "authority_handoff_pending" in result.stdout
-    assert probes[0][0] == "https://8.8.8.8/api"
+    assert probes[0][0][0] == "https://8.8.8.8/api"
+    assert probes[0][1] == {"wait_seconds": 60}
     assert '"https_verified": true' in result.stdout
 
     monkeypatch.setattr(
         launcher, "_verify_destination_https",
-        lambda *args: (_ for _ in ()).throw(RuntimeError("TLS verification failed")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("TLS verification failed")),
     )
     failed = runner.invoke(
         launcher.app,

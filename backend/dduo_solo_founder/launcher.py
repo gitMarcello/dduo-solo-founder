@@ -12,6 +12,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -899,6 +900,7 @@ def compose(
     *args: str,
     capture_output: bool = False,
     input_text: str | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run Compose with the isolated environment for one project."""
     if str(project.get("binding") or "local") != "local":
@@ -935,6 +937,7 @@ def compose(
         capture_output=capture_output,
         text=capture_output or input_text is not None,
         **({"input": input_text, "encoding": "utf-8"} if input_text is not None else {}),
+        **({"timeout": timeout} if timeout is not None else {}),
     )
 
 
@@ -1541,6 +1544,51 @@ def _restart_remote_stack(project_root: Path, project: dict) -> None:
     raise RuntimeError("remote project stack did not become healthy within 180 seconds")
 
 
+def _require_remote_bridge_connectivity(project_root: Path, project: dict) -> None:
+    """Check the actual API/worker network path, without invoking the sleep model."""
+    hints = {
+        "configuration": "Repair this project's container bridge configuration.",
+        "unreachable": (
+            "Check the host agent and container-to-host routing/firewall. Allow only "
+            "this project's current Docker network to the host agent's TCP port; "
+            "do not expose that port to the Internet."
+        ),
+        "unauthorized": "Repair the project-scoped bridge credential; do not relax authentication.",
+        "protocol_mismatch": "Align the host agent and project container runtime versions.",
+        "invalid_response": "Verify that the configured endpoint is the expected dDuo host agent.",
+        "probe_failed": "Check that this project's container is running the updated dDuo runtime.",
+    }
+    for service in ("api", "worker"):
+        reason = "probe_failed"
+        try:
+            result = compose(
+                {**project, "root_path": str(project_root)},
+                "exec", "-T", service, "python", "-m",
+                "dduo_solo_founder.bridge_probe", str(project["id"]),
+                capture_output=True, timeout=12,
+            )
+            # Container output is untrusted diagnostics: never echo credentials,
+            # arbitrary stdout/stderr, or a subprocess traceback to the user.
+            raw = result.stdout
+            if isinstance(raw, str) and len(raw) <= 8192:
+                status = json.loads(raw)
+                if isinstance(status, dict):
+                    if (result.returncode == 0 and status.get("ready") is True
+                            and status.get("reason") == "ready"):
+                        continue
+                    candidate = status.get("reason")
+                    if isinstance(candidate, str) and candidate in hints:
+                        reason = candidate
+        except (subprocess.TimeoutExpired, OSError, ValueError, TypeError):
+            pass
+        raise RuntimeError(
+            f"Host agent check failed from the {service} container ({reason}). "
+            f"{hints[reason]} Fix the reported issue, then rerun remote-host. "
+            "This check does not cancel the transfer or change authority; "
+            "keep a pending transfer frozen/read-only while repairing it."
+        ) from None
+
+
 def _require_remote_sleep_auth(project_id: str) -> str:
     """Fail before promotion unless this VPS owns one supported subscription.
 
@@ -1819,19 +1867,64 @@ def _claim_remote_authority(
     return result
 
 
+def _retryable_destination_https_failure(error: Exception) -> bool:
+    """Retry gateway startup failures, never TLS validation or transfer errors."""
+    pending: list[BaseException] = [error]
+    inspected: set[int] = set()
+    startup_tls_alert = False
+    other_tls_error = False
+    while pending:
+        cause = pending.pop()
+        if id(cause) in inspected:
+            continue
+        inspected.add(id(cause))
+        # HTTPX normally preserves the SSL cause; retain the safe decision if
+        # a transport only retained its standard OpenSSL diagnostic string.
+        detail = str(cause).upper()
+        if isinstance(cause, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in detail:
+            return False
+        if isinstance(cause, ssl.SSLError) or "[SSL:" in detail:
+            # Caddy may have no certificate yet during its first ACME issue.
+            # This particular alert can be transient; the next connection
+            # still has to pass ordinary TLS verification. Other TLS errors
+            # are terminal, and a later certificate cause overrides the alert.
+            if (
+                getattr(cause, "reason", None) == "TLSV1_ALERT_INTERNAL_ERROR"
+                or "TLSV1_ALERT_INTERNAL_ERROR" in detail
+            ):
+                startup_tls_alert = True
+            else:
+                other_tls_error = True
+        pending.extend(
+            linked for linked in (cause.__cause__, cause.__context__) if linked is not None
+        )
+    if other_tls_error:
+        return False
+    if startup_tls_alert:
+        return isinstance(error, httpx.ConnectError)
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code in {502, 503, 504}
+    return isinstance(error, (httpx.NetworkError, httpx.TimeoutException))
+
+
 def _verify_destination_https(
     api_url: str,
     project_id: str,
     authority: dict,
     activation_receipt: str,
     authority_secret: str,
+    *,
+    wait_seconds: float = 0,
 ) -> str:
     """Prove the public TLS route reaches this exact read-only transfer target.
 
     The receipt alone proves no network reachability. Re-issue it through the
     idempotent activation endpoint, verifying TLS and every transfer claim.
     Never follow redirects carrying the node credential to a different origin.
+    Startup callers may wait briefly; retirement keeps its single-attempt default.
     """
+    if not 0 <= wait_seconds <= 60:
+        raise ValueError("destination HTTPS wait must be between 0 and 60 seconds")
     canonical_api = canonical_https_url(api_url, field="destination_api_url")
     if not isinstance(activation_receipt, str):
         raise RuntimeError("destination readiness proof is malformed")
@@ -1855,46 +1948,66 @@ def _verify_destination_https(
         or authority["generation"] != proof.source_generation
     ):
         raise RuntimeError("destination readiness proof does not match this transfer")
-    try:
-        response = httpx.post(
-            f"{canonical_api}/projects/{project_id}/authority/activate",
-            headers={"X-DDUO-Authority": authority_secret},
-            json={
-                "node_id": proof.target_node_id,
-                "expected_generation": proof.source_generation,
-            },
-            verify=True,
-            trust_env=False,
-            follow_redirects=False,
-            timeout=httpx.Timeout(30, connect=10),
+    deadline = time.monotonic() + wait_seconds if wait_seconds else None
+    last_error: Exception | None = None
+    while True:
+        remaining = deadline - time.monotonic() if deadline is not None else None
+        if remaining is not None and remaining <= 0:
+            break
+        timeout = (
+            httpx.Timeout(30, connect=10)
+            if remaining is None
+            else httpx.Timeout(min(30, remaining / 4), connect=min(10, remaining / 4))
         )
-        response.raise_for_status()
-        result = response.json()
-        if not isinstance(result, dict) or not isinstance(result.get("activation_receipt"), str):
-            raise ValueError("invalid authority response")
-        echoed = verify_authority_receipt(
-            result.get("activation_receipt", ""),
-            authority_secret,
-            expected_kind="destination_ready",
-        )
-        if (
-            echoed != proof
-            or result.get("project_id") != project_id
-            or result.get("node_id") != proof.source_node_id
-            or result.get("target_node_id") != proof.target_node_id
-            or type(result.get("generation")) is not int
-            or result["generation"] != proof.source_generation
-            or result.get("state") != "transfer_pending"
-            or result.get("phase") != "destination_ready"
-            or result.get("writable") is not False
-        ):
-            raise ValueError("HTTPS endpoint does not match the read-only transfer target")
-    except (httpx.HTTPError, ValueError, AuthorityReceiptError) as exc:
-        raise RuntimeError(
-            "destination HTTPS verification failed; source retirement is fenced. "
-            "Check the public API URL, certificate, firewall and restored node, then retry"
-        ) from exc
-    return canonical_api
+        try:
+            response = httpx.post(
+                f"{canonical_api}/projects/{project_id}/authority/activate",
+                headers={"X-DDUO-Authority": authority_secret},
+                json={
+                    "node_id": proof.target_node_id,
+                    "expected_generation": proof.source_generation,
+                },
+                verify=True,
+                trust_env=False,
+                follow_redirects=False,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or not isinstance(result.get("activation_receipt"), str):
+                raise ValueError("invalid authority response")
+            echoed = verify_authority_receipt(
+                result.get("activation_receipt", ""),
+                authority_secret,
+                expected_kind="destination_ready",
+            )
+            if (
+                echoed != proof
+                or result.get("project_id") != project_id
+                or result.get("node_id") != proof.source_node_id
+                or result.get("target_node_id") != proof.target_node_id
+                or type(result.get("generation")) is not int
+                or result["generation"] != proof.source_generation
+                or result.get("state") != "transfer_pending"
+                or result.get("phase") != "destination_ready"
+                or result.get("writable") is not False
+            ):
+                raise ValueError("HTTPS endpoint does not match the read-only transfer target")
+            return canonical_api
+        except (httpx.HTTPError, ValueError, AuthorityReceiptError, ssl.SSLError) as exc:
+            last_error = exc
+            if deadline is None or not _retryable_destination_https_failure(exc):
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(2, remaining))
+    raise RuntimeError(
+        "destination HTTPS verification failed; source retirement is fenced. "
+        "Check the public API URL, certificate, firewall and restored node, then retry. "
+        "Before finalization, keep the source frozen and the destination read-only while repairing; "
+        "cancellation is optional if you abandon the transfer."
+    ) from last_error
 
 
 @app.command("remote-host")
@@ -1944,6 +2057,7 @@ def remote_host(
 
     project = set_local_deployment_mode(project_root, "remote")
     _restart_remote_stack(project_root, project)
+    _require_remote_bridge_connectivity(project_root, project)
     authority = _claim_remote_authority(
         project_root,
         project,
@@ -1987,6 +2101,7 @@ def remote_host(
         "dashboard_url": gateway["dashboard_url"],
         "https_port": gateway["https_port"],
         "manager_bootstrapped": bootstrapped,
+        "container_bridge_verified": True,
         "authority": authority,
         "semantic_indexes": index_recovery,
         "firewall_ports": firewall_ports,
@@ -2002,6 +2117,7 @@ def remote_host(
             load_project_secrets(project["id"], include_legacy=False).get(
                 "DDUO_NODE_AUTHORITY_SECRET", ""
             ),
+            wait_seconds=60,
         )
         payload["https_verified"] = True
         payload["activation_receipt"] = authority.get("activation_receipt")

@@ -4,8 +4,9 @@
 
 Ogni progetto mantiene un volume PostgreSQL, uno Qdrant, API, worker e dashboard
 propri, sia in locale sia su VPS. Più progetti sullo stesso server non fondono
-stack, database, credenziali o memoria. È comune soltanto il gateway Caddy, che
-termina HTTPS e inoltra ogni porta pubblica alla dashboard loopback corretta.
+stack, database, credenziali o memoria. Sono comuni il gateway Caddy e l'agente
+host, che autentica separatamente ogni progetto. Caddy termina HTTPS e inoltra
+ogni porta pubblica alla dashboard loopback corretta.
 
 Il primo progetto usa normalmente HTTPS `443`; i successivi ricevono una porta
 stabile libera fra `24443` e `25442`. `remote-host` stampa le porte da aprire.
@@ -85,7 +86,8 @@ bootstrap contiene il token iniziale del gestore. Il comando:
 4. Crea i segreti remoti di autenticazione, sessione e autorità.
 5. Preserva lo stack isolato e ruota la password PostgreSQL prima che i servizi
    adottino il nuovo segreto.
-6. Attiva la modalità remota autenticata per API e worker.
+6. Attiva la modalità remota autenticata per API e worker e verifica da entrambi
+   i container il collegamento autenticato all'agente host, prima del claim.
 7. Assegna l'autorità alla VPS oppure produce una ricevuta di disponibilità in
    sola lettura per un trasferimento preparato.
 8. Crea il primo **Gestore dell'infrastruttura** solo quando l'autorità è
@@ -94,7 +96,9 @@ bootstrap contiene il token iniziale del gestore. Il comando:
    firewall: `443` permanente e l'eventuale porta aggiuntiva del progetto. Per
    un trasferimento preparato verifica certificato TLS pubblico e percorso
    HTTPS completo fino al progetto esatto in sola lettura, prima di riportare
-   `https_verified`.
+   `https_verified`. All'avvio ritenta per una finestra massima di 60 secondi
+   gli errori temporanei di connessione/gateway; certificati non validi,
+   autorizzazioni errate e identità non corrispondenti restano bloccanti.
 
 Il primo gestore non deve già esistere nel progetto locale ripristinato. Il suo
 host legge `POST /projects/{id}/authority/status` con il segreto d'autorità
@@ -110,6 +114,21 @@ prerequisito non c'è promozione. Token bridge e porta dinamica sono solo nel
 file ambiente `0600`, non nella unit o negli argomenti del processo.
 `bridge-stop` ferma la unit senza disabilitarne l'avvio automatico; il prossimo
 avvio dDuo la riattiva.
+
+Il firewall deve consentire il traffico **dalla rete Docker effettiva del
+progetto alla porta TCP dell'agente host**, non da Internet. La porta corrente
+è nel file privato `~/.config/dduo-solo-founder/bridge/port`; non stampare
+`agent.env`, che contiene anche il token. Un gestore autorizzato verifica rete,
+interfaccia e porta prima di aggiungere una regola limitata e persistente,
+senza disabilitare il firewall o rimuovere regole di altri progetti. Ricontrollare
+la rete dopo un restore che la ricrea e la persistenza dopo il riavvio VPS.
+Il plugin non modifica automaticamente il firewall.
+
+Il controllo dai container legge soltanto lo stato autenticato del bridge:
+non esegue il sonno e non modifica dati. `container_bridge_verified: true`
+conferma quel collegamento, non un consolidamento riuscito. Se fallisce,
+`remote-host` indica container e categoria (rete, credenziali, configurazione
+o protocollo) e non procede al claim. Riparare la causa e ripetere il comando.
 
 Il primo token gestore viene stampato una volta. Un record privato pendente
 viene salvato prima della modifica server e rimosso dopo la stampa: crash o
@@ -274,9 +293,14 @@ Un progetto locale o remoto esistente si sposta tramite full recovery:
    il primo gestore di un progetto locale nasce solo dopo il completamento.
    Se HTTPS fallisce, correggere certificato, firewall o routing e riprovare:
    la sorgente non è ritirata e la destinazione ripristinata resta in sola lettura.
+   Un errore temporaneo non impone un nuovo backup né l'annullamento: mantenere
+   sorgente congelata e clone in sola lettura, quindi ripetere `remote-host`.
+   Non proseguire senza una verifica positiva e non aggirare errori d'identità.
    Per rinunciare ora, eliminare il clone in sola lettura e sulla sorgente usare
    `dduo-solo-founder remote-transfer-cancel --new-node-not-activated`.
    La sorgente torna scrivibile e la ricevuta precedente non è più valida.
+   Dopo un annullamento servono nuovo prepare, nuovo backup finale e nuovo
+   restore; non riutilizzare l'archivio o le ricevute del freeze annullato.
 4. Per confermare lo spostamento eseguire sulla vecchia sorgente:
 
    ```bash

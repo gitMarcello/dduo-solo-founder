@@ -146,10 +146,10 @@ def _trust_test_ca(monkeypatch, certificate):
     monkeypatch.setattr(launcher.httpx, "post", post)
 
 
-def probe(url, *, authority=None, token=None, secret=SECRET):
+def probe(url, *, authority=None, token=None, secret=SECRET, wait_seconds=0):
     return launcher._verify_destination_https(
         url, PROOF.project_id, authority or AUTHORITY,
-        token or issue_authority_receipt(secret, PROOF), secret,
+        token or issue_authority_receipt(secret, PROOF), secret, wait_seconds=wait_seconds,
     )
 
 
@@ -172,8 +172,17 @@ def test_real_tls_or_api_failure_fences_retirement(tls_destination, monkeypatch,
         elif failure == "route":
             url += "/wrong-route"
         secret = "not-the-node-credential" if failure == "auth" else SECRET
+        calls = []
+        real_post = httpx.post
+
+        def counted_post(*args, **kwargs):
+            calls.append(args)
+            return real_post(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "post", counted_post)
         with pytest.raises(RuntimeError, match="HTTPS verification failed"):
-            probe(url, secret=secret)
+            probe(url, secret=secret, wait_seconds=60)
+        assert len(calls) == 1
 
 
 @pytest.mark.parametrize("field,value", [
@@ -219,13 +228,17 @@ def test_https_response_must_authenticate_exact_transfer(monkeypatch, failure):
         result["phase"] = "active"
     content = "not-json" if failure == "non-json" else json.dumps([] if failure == "list" else result)
 
+    calls = []
+
     def post(url, **kwargs):
+        calls.append(url)
         assert kwargs["verify"] is True and kwargs["follow_redirects"] is False
         return httpx.Response(status, headers=headers, content=content, request=httpx.Request("POST", url))
 
     monkeypatch.setattr(httpx, "post", post)
     with pytest.raises(RuntimeError, match="HTTPS verification failed"):
-        probe("https://destination.example/api")
+        probe("https://destination.example/api", wait_seconds=60)
+    assert len(calls) == 1
 
 
 def test_plain_http_and_forged_receipt_never_send_credentials(monkeypatch):
@@ -234,3 +247,196 @@ def test_plain_http_and_forged_receipt_never_send_credentials(monkeypatch):
         probe("http://destination.example/api")
     with pytest.raises(RuntimeError, match="unauthenticated"):
         probe("https://destination.example/api", token="not-a-receipt")
+
+
+@pytest.fixture
+def startup_clock(monkeypatch):
+    class Clock:
+        now = 0.0
+        sleeps = []
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, delay):
+            assert 0 < delay <= 2
+            self.sleeps.append(delay)
+            self.now += delay
+
+    clock = Clock()
+    monkeypatch.setattr(launcher.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(launcher.time, "sleep", clock.sleep)
+    return clock
+
+
+def _ready_response(url):
+    return httpx.Response(200, json={
+        **AUTHORITY, "phase": "destination_ready",
+        "activation_receipt": issue_authority_receipt(SECRET, PROOF),
+    }, request=httpx.Request("POST", url))
+
+
+@pytest.mark.parametrize("failure", ["connect", "read", "timeout", 502, 503, 504])
+def test_gateway_startup_retries_transient_failure_then_verifies_same_proof(
+    monkeypatch, startup_clock, failure,
+):
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        assert kwargs["verify"] is True
+        assert kwargs["follow_redirects"] is False and kwargs["trust_env"] is False
+        if len(calls) == 1:
+            if failure == "connect":
+                raise httpx.ConnectError("connection refused")
+            if failure == "read":
+                raise httpx.ReadError("connection reset")
+            if failure == "timeout":
+                raise httpx.ConnectTimeout("startup timeout")
+            return httpx.Response(failure, request=httpx.Request("POST", url))
+        return _ready_response(url)
+
+    monkeypatch.setattr(httpx, "post", post)
+    url = "https://destination.example/api"
+    assert probe(url, wait_seconds=60) == url
+    assert len(calls) == 2 and startup_clock.sleeps == [2]
+    assert calls[0][0] == calls[1][0]
+    assert calls[0][1]["json"] == calls[1][1]["json"]
+    assert calls[0][1]["headers"] == calls[1][1]["headers"]
+    assert calls[1][1]["timeout"].read <= 58
+
+
+def test_startup_retry_budget_exhaustion_preserves_fence(monkeypatch, startup_clock):
+    attempts = []
+
+    def post(url, **kwargs):
+        remaining = 6 - startup_clock.now
+        timeout = kwargs["timeout"]
+        assert all(0 < value <= remaining for value in (
+            timeout.connect, timeout.read, timeout.write, timeout.pool,
+        ))
+        attempts.append(startup_clock.now)
+        startup_clock.now += min(3, remaining)
+        raise httpx.ReadTimeout("artificial slow startup")
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(RuntimeError, match="keep the source frozen"):
+        probe("https://destination.example/api", wait_seconds=6)
+    assert attempts == [0, 5]
+    assert startup_clock.now == 6 and startup_clock.sleeps == [2]
+
+
+def test_startup_never_starts_a_retry_after_the_deadline(monkeypatch, startup_clock):
+    attempts = []
+
+    def post(url, **kwargs):
+        attempts.append(startup_clock.now)
+        return httpx.Response(503, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(RuntimeError, match="cancellation is optional"):
+        probe("https://destination.example/api", wait_seconds=5)
+    assert attempts == [0, 2, 4]
+    assert startup_clock.now == 5 and startup_clock.sleeps == [2, 2, 1]
+
+
+def test_retirement_keeps_single_attempt_default(monkeypatch, startup_clock):
+    calls = []
+
+    def post(*args, **kwargs):
+        calls.append(kwargs)
+        raise httpx.ConnectError("not ready")
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(RuntimeError, match="retirement is fenced"):
+        probe("https://destination.example/api")
+    assert len(calls) == 1 and startup_clock.sleeps == []
+    assert calls[0]["timeout"].connect == 10 and calls[0]["timeout"].read == 30
+
+
+@pytest.mark.parametrize("status", [301, 307, 400, 401, 403, 404, 409, 429, 500])
+def test_startup_does_not_retry_nontransient_http_status(monkeypatch, startup_clock, status):
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        return httpx.Response(status, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(RuntimeError, match="HTTPS verification failed"):
+        probe("https://destination.example/api", wait_seconds=60)
+    assert len(calls) == 1 and startup_clock.sleeps == []
+
+
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_certificate_errors_are_never_retried_without_tls_bypass(
+    monkeypatch, startup_clock, wrapped,
+):
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["verify"] is True
+        error = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] invalid certificate")
+        if wrapped:
+            error.__cause__ = ssl.SSLCertVerificationError("certificate expired")
+        raise error
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(RuntimeError, match="HTTPS verification failed"):
+        probe("https://destination.example/api", wait_seconds=60)
+    assert len(calls) == 1 and startup_clock.sleeps == []
+
+
+def test_gateway_initial_acme_tls_alert_retries_with_verified_tls(
+    monkeypatch, startup_clock,
+):
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["verify"] is True
+        assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
+        if len(calls) == 1:
+            error = httpx.ConnectError("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error")
+            error.__cause__ = ssl.SSLError("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error")
+            raise error
+        return _ready_response(url)
+
+    monkeypatch.setattr(httpx, "post", post)
+    url = "https://destination.example/api"
+    assert probe(url, wait_seconds=60) == url
+    assert len(calls) == 2 and startup_clock.sleeps == [2]
+
+
+@pytest.mark.parametrize("failure", ["wrong-version", "other-alert", "nested-certificate"])
+def test_startup_alert_does_not_mask_other_tls_or_certificate_errors(
+    monkeypatch, startup_clock, failure,
+):
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["verify"] is True
+        if failure == "nested-certificate":
+            error = httpx.ConnectError("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error")
+            cause = ssl.SSLError("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error")
+            cause.__cause__ = ssl.SSLCertVerificationError("certificate validation failed")
+        else:
+            detail = "WRONG_VERSION_NUMBER" if failure == "wrong-version" else "SSLV3_ALERT_HANDSHAKE_FAILURE"
+            error = httpx.ConnectError(f"[SSL: {detail}] TLS failed")
+            cause = ssl.SSLError(f"[SSL: {detail}] TLS failed")
+        error.__cause__ = cause
+        raise error
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(RuntimeError, match="HTTPS verification failed"):
+        probe("https://destination.example/api", wait_seconds=60)
+    assert len(calls) == 1 and startup_clock.sleeps == []
+
+
+@pytest.mark.parametrize("wait", [-1, 61, float("inf"), float("nan")])
+def test_startup_wait_must_be_bounded_before_network(monkeypatch, wait):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: pytest.fail("must not send credential"))
+    with pytest.raises(ValueError, match="between 0 and 60"):
+        probe("https://destination.example/api", wait_seconds=wait)

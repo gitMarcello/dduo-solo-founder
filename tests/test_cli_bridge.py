@@ -25,6 +25,60 @@ SCHEMA = {
 }
 
 
+def test_real_bridge_health_accepts_only_exact_project_token_and_preserves_master(monkeypatch):
+    from dduo_solo_founder import bridge_probe
+
+    class NoExecution:
+        def __getattr__(self, _name):
+            pytest.fail("read-only health must not invoke a runner")
+
+    server = cli_bridge.ThreadingHTTPServer(("127.0.0.1", 0), cli_bridge.BridgeHandler)
+    server.token = "synthetic-master"
+    server.runner = NoExecution()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    scoped = project_bridge_token(server.token, "project-a")
+    try:
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            cases = [
+                ("/health?project_id=project-a", scoped, 200),
+                ("/health?project_id=project-b", scoped, 401),
+                ("/health?project_id=project-a", "", 401),
+                ("/health?project_id=project-a", "incorrect", 401),
+                ("/health", scoped, 401),
+                ("/health", server.token, 200),
+                ("/health?project_id=project-a", server.token, 200),
+                ("/health?project_id=", scoped, 422),
+                ("/health?project_id=project-a&project_id=project-b", scoped, 422),
+                ("/health?project_id=a%0Ab", scoped, 422),
+                ("/health?project_id=" + "x" * 161, scoped, 422),
+            ]
+            for path, token, expected in cases:
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                response = client.get(base + path, headers=headers)
+                assert response.status_code == expected
+                payload = response.json()
+                assert server.token not in response.text and scoped not in response.text
+                if expected == 200:
+                    assert payload["status"] == "ok"
+                    assert payload["bridge_protocol_version"] == 3
+                    if "project_id=" in path:
+                        assert payload["project_id"] == "project-a"
+                    else:
+                        assert "project_id" not in payload
+        assert bridge_probe.probe(
+            "project-a", environ={"CLI_BRIDGE_URL": base, "CLI_BRIDGE_TOKEN": scoped}
+        ) == {"ready": True, "reason": "ready"}
+        assert bridge_probe.probe(
+            "project-b", environ={"CLI_BRIDGE_URL": base, "CLI_BRIDGE_TOKEN": scoped}
+        ) == {"ready": False, "reason": "unauthorized"}
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()
+
+
 @pytest.fixture(autouse=True)
 def accept_explicit_test_project_claims(monkeypatch, tmp_path):
     """Most unit fixtures model an already activated project without a host registry."""
