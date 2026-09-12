@@ -32,6 +32,12 @@ Diagnostica CLI grezza, chiavi di autenticazione runtime e percorsi estranei
 non vengono raccolti come campi tecnici. Registrarli non pianifica da solo un backup e gli
 snapshot storici mancanti non vengono inventati.
 
+La cronologia dei backup viene importata direttamente in PostgreSQL tramite
+stdin, in una transazione. Non richiede file leggibili dall'utente del server
+nel container né modifiche ai permessi. Un errore interrompe il ripristino;
+ripetere l'importazione non duplica le registrazioni già presenti. Il formato
+cifrato e la compatibilità degli archivi esistenti restano invariati.
+
 <a id="archive-format"></a>
 ## Formato dell'archivio
 

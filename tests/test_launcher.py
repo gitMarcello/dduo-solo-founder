@@ -4736,11 +4736,15 @@ def test_portable_backup_history_restore_is_validated_and_parameter_free(monkeyp
     history.write_text(json.dumps([row]))
     calls = []
     monkeypatch.setattr(
-        launcher, "_checked_compose", lambda *args: calls.append(args[1:])
+        launcher, "_checked_compose", lambda *args, **kwargs: calls.append((args[1:], kwargs))
     )
     assert launcher._restore_portable_backup_history(tmp_path, project) == 1
-    assert calls[0][0] == "cp"
-    assert calls[1][0] == "exec" and "pg_read_file" in calls[1][-1]
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:3] == ("exec", "-T", "postgres")
+    assert "FROM STDIN" in args[-1] and "pg_read_file" not in args[-1]
+    assert "input_text" in kwargs
+    assert not (tmp_path / "backup-records.restore.json").exists()
 
 
 def test_existing_restore_target_requires_verified_safety_backup(monkeypatch, tmp_path):

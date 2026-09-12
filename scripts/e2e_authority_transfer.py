@@ -7,15 +7,19 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPException
+from http.server import ThreadingHTTPServer
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Thread
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +66,7 @@ def response(
     *,
     body: dict | None = None,
     headers: dict[str, str] | None = None,
+    timeout: float = 20,
 ) -> tuple[int, dict]:
     encoded = json.dumps(body).encode("utf-8") if body is not None else None
     outgoing = {
@@ -72,7 +77,7 @@ def response(
     try:
         with urlopen(
             Request(f"{base}{path}", data=encoded, headers=outgoing, method=method),
-            timeout=20,
+            timeout=timeout,
         ) as response:
             status = response.status
             payload = response.read()
@@ -90,8 +95,9 @@ def request(
     body: dict | None = None,
     headers: dict[str, str] | None = None,
     expected: int = 200,
+    timeout: float = 20,
 ) -> dict:
-    status, payload = response(base, method, path, body=body, headers=headers)
+    status, payload = response(base, method, path, body=body, headers=headers, timeout=timeout)
     if status != expected:
         raise RuntimeError(
             f"{method} {path} returned {status}, expected {expected}: "
@@ -108,6 +114,9 @@ def require(condition: bool, message: str) -> None:
 def database_snapshot(name: str, environment: dict[str, str], override: Path) -> dict:
     """Read durable rows directly so API projections cannot hide restore losses."""
     tables = {
+        "agent_sessions": "id",
+        "turns": "id",
+        "memories": "id",
         "sprints": "id",
         "tasks": "id",
         "plans": "id",
@@ -424,48 +433,43 @@ def restore_frozen_clone(
     dump: Path,
     destination: str,
 ) -> None:
-    """Copy the actual PG dump; never manufacture the destination authority row."""
-    compose(
-        source_name,
-        source_env,
-        override,
-        "exec",
-        "-T",
-        "postgres",
-        "pg_dump",
-        "-Fc",
-        "-U",
-        "dduo_solo_founder",
-        "-d",
-        "dduo_solo_founder",
-        "-f",
-        "/tmp/authority.dump",
+    """Exercise the encrypted backup API and production restore CLI end to end."""
+    from dduo_solo_founder.launcher import _validate_final_transfer_backup
+
+    source = f"http://127.0.0.1:{source_env['DDUO_SOLO_FOUNDER_API_PORT']}"
+    created = request(source, "POST", f"/projects/{PROJECT_ID}/backups", timeout=120)
+    _validate_final_transfer_backup(created, PROJECT_ID, AUTHORITY_SECRET)
+    require(created["manifest"]["history"]["included"], "archive omitted portable history")
+    archive = Path(source_env["DDUO_SOLO_FOUNDER_BACKUP_SOURCE"]) / created["archive_name"]
+    require(archive.is_file(), "verified final archive is not available on the host")
+    # Each attempt models a clean destination host. Remove only the disposable
+    # clone from the preceding cancelled handoff; the parent owns these labels.
+    compose(destination_name, destination_env, override, "down", "-v", "--remove-orphans")
+    host = dump.parent / f"restore-host-{uuid.uuid4().hex[:8]}"
+    home = host / "home"
+    home.mkdir(parents=True)
+    environment = {
+        **destination_env,
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        # Docker's vendor CLI plugin/context discovery belongs to the test
+        # runner, not to the artificial dDuo host. Read it without modifying it.
+        "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker")),
+        "DDUO_SOLO_FOUNDER_HOME": str(ROOT),
+        "DDUO_AUTH_REQUIRED": "false",
+        "DDUO_SOLO_FOUNDER_BACKUP_KEY_SOURCE": source_env["DDUO_SOLO_FOUNDER_BACKUP_KEY_SOURCE"],
+    }
+    subprocess.run(
+        [
+            sys.executable, str(ROOT / "scripts/e2e_transfer_restore.py"),
+            "--archive", str(archive), "--project-root", str(host / "checkout"),
+            "--compose-name", destination_name, "--compose-override", str(override),
+        ],
+        env=environment,
+        cwd=ROOT,
+        check=True,
     )
-    compose(source_name, source_env, override, "cp", "postgres:/tmp/authority.dump", str(dump))
-    compose(destination_name, destination_env, override, "stop", "api")
-    compose(destination_name, destination_env, override, "up", "-d", "--wait", "postgres")
-    compose(
-        destination_name, destination_env, override, "cp", str(dump), "postgres:/tmp/authority.dump"
-    )
-    compose(
-        destination_name,
-        destination_env,
-        override,
-        "exec",
-        "-T",
-        "postgres",
-        "pg_restore",
-        "--exit-on-error",
-        "--clean",
-        "--if-exists",
-        "--no-owner",
-        "--no-privileges",
-        "-U",
-        "dduo_solo_founder",
-        "-d",
-        "dduo_solo_founder",
-        "/tmp/authority.dump",
-    )
+    # remote-host switches to real application authentication after restore.
     compose(destination_name, destination_env, override, "up", "-d", "qdrant", "api")
     wait_for_health(destination)
 
@@ -476,6 +480,7 @@ def main() -> None:
     destination_name = f"dduo-authority-{run_id}-destination"
     for port in (18766, 18767):
         with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 listener.bind(("127.0.0.1", port))
             except OSError as exc:
@@ -488,7 +493,9 @@ def main() -> None:
         check=True,
     )
     with tempfile.TemporaryDirectory(prefix="dduo-authority-e2e-") as temporary:
-        root = Path(temporary)
+        # macOS /var is a symlink; private restored credential directories
+        # correctly reject symlinked ancestry, so use the canonical test root.
+        root = Path(temporary).resolve()
         source_root = root / "source"
         destination_root = root / "destination"
         prepare_files(source_root)
@@ -521,6 +528,28 @@ def main() -> None:
         source = "http://127.0.0.1:18766"
         destination = "http://127.0.0.1:18767"
         authority_headers = {"X-DDUO-Authority": AUTHORITY_SECRET}
+        import ci_backup_bridge
+        from ci_backup_bridge import build_payload, handler, supplement_file
+
+        fixture_payload = json.loads(build_payload(PROJECT_ID))
+        fixture_payload["files"][0] = supplement_file(
+            "secrets/dduo.env",
+            f"OPENAI_API_KEY=ci-placeholder\nDDUO_NODE_AUTHORITY_SECRET={AUTHORITY_SECRET}\n".encode(),
+        )
+        token = f"ci-transfer-{uuid.uuid4().hex}"
+        with patch.object(ci_backup_bridge, "build_payload", lambda _project: json.dumps(fixture_payload).encode()):
+            bridge = ThreadingHTTPServer(("0.0.0.0", 0), handler(PROJECT_ID, token))
+        bridge_thread = Thread(target=bridge.serve_forever, daemon=True)
+        bridge_thread.start()
+        source_env.update({
+            "DDUO_SOLO_FOUNDER_BACKUP_CONFIGURED": "true",
+            "DDUO_SOLO_FOUNDER_BACKUP_INCLUDE_QDRANT": "false",
+            "DDUO_CLI_BRIDGE_URL": f"http://host.docker.internal:{bridge.server_port}",
+            "DDUO_CLI_BRIDGE_TOKEN": token,
+        })
+        from dduo_solo_founder.backup import generate_recovery_key
+
+        (source_root / "backup.key").write_text(generate_recovery_key() + "\n")
         try:
             compose(source_name, source_env, override, "up", "-d", "postgres", "qdrant", "api")
             wait_for_health(source)
@@ -546,7 +575,51 @@ def main() -> None:
                 "source fixture must not have a pre-existing remote manager",
             )
             seeded = seed_sprint_lifecycle(source)
+            compose(
+                source_name, source_env, override, "exec", "-T", "postgres", "psql",
+                "-U", "dduo_solo_founder", "-d", "dduo_solo_founder", "-v", "ON_ERROR_STOP=1",
+                "-c", f"""
+                INSERT INTO backup_records
+                    (id, project_id, trigger, status, archive_name, size_bytes, includes_qdrant,
+                     retained, source_generation, manifest, error, created_at, completed_at, verified_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000048', '{PROJECT_ID}', 'manual', 'verified',
+                     'quoted-history.dduobackup', 48, false, false, 0,
+                     '{{"text":"caffè, qualità — quote \\\" and newline\\n and \\u005c\\u005c"}}'::json,
+                     NULL, now(), now(), now()),
+                    ('00000000-0000-4000-8000-000000000049', '{PROJECT_ID}', 'manual', 'failed',
+                     NULL, NULL, false, false, 0, '{{"failure":"artificial"}}'::json,
+                     E'artificial failure\\nsecond line', now(), NULL, NULL);
+                INSERT INTO agent_sessions
+                    (id, project_id, client, external_id, off_record, started_at, last_activity_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000051', '{PROJECT_ID}', 'codex',
+                     'synthetic-transfer-conversation', false, now(), now());
+                INSERT INTO turns
+                    (id, project_id, session_id, external_id, user_prompt, assistant_response,
+                     committed, status, stop_attempts, semantic_commit, off_record, sleep_status,
+                     retrieved_memory_ids, used_memory_ids, created_at, committed_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000052', '{PROJECT_ID}',
+                     '00000000-0000-4000-8000-000000000051', 'synthetic-turn',
+                     'Ricorda questa scelta artificiale: caffè e qualità.',
+                     'Scelta artificiale registrata.', true, 'committed', 1, '{{}}'::json,
+                     false, 'processed', '[]'::json, '[]'::json, now(), now());
+                INSERT INTO memories
+                    (id, project_id, node_type, node_key, text, status, memory_group_id, revision,
+                     source_turn_ids, source_message_ids, source_node_ids, source_artifact_ids,
+                     valid_from, metadata, created_at, updated_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000053', '{PROJECT_ID}', 'reusable_fact',
+                     'synthetic-transfer-memory', 'Scelta artificiale: caffè e qualità.', 'active',
+                     '00000000-0000-4000-8000-000000000053', 1,
+                     '["00000000-0000-4000-8000-000000000052"]'::json,
+                     '[]'::json, '[]'::json, '[]'::json, now(), '{{"fixture":true}}'::json, now(), now());
+                """,
+            )
             durable = database_snapshot(source_name, source_env, override)
+            require(len(durable["memories"]) == len(durable["turns"]) == 1,
+                    "transfer must exercise nonempty memory and committed conversation")
             carried_revisions = [
                 row
                 for row in durable["task_revisions"]
@@ -688,6 +761,9 @@ def main() -> None:
                 body={"client": "codex", "external_id": "after-cancel"},
             )
             require(bool(session.get("id")), "source write after cancellation failed")
+            # This authorized post-cancellation write belongs in the new final
+            # archive, unlike the abandoned first snapshot.
+            durable = database_snapshot(source_name, source_env, override)
             clone_after_cancel = request(
                 destination,
                 "POST",
@@ -795,7 +871,7 @@ def main() -> None:
             )
             require(
                 database_snapshot(destination_name, destination_env, override) == durable,
-                "PostgreSQL restore changed Sprint, task, plan, revision, or receipt rows",
+                "PostgreSQL restore changed memory, turn, session, Sprint, Work, or receipt rows",
             )
             verify_restored_sprints(destination, seeded)
             require(
@@ -803,8 +879,8 @@ def main() -> None:
                 "replaying restored Sprint receipts changed durable state",
             )
             print(
-                "Sprint restore passed: lifecycle, two closure histories, statuses, ordered plan "
-                "links, task/plan revisions, and all mutation receipts preserved."
+                "Memory/Work restore passed: one durable memory, one committed turn, two sessions, "
+                "Sprint lifecycle/closures, plan links, revisions, and mutation receipts preserved."
             )
             verify_concurrent_sprint_start(destination)
             request(
@@ -837,6 +913,9 @@ def main() -> None:
                     pass
             raise
         finally:
+            bridge.shutdown()
+            bridge.server_close()
+            bridge_thread.join(timeout=5)
             for name, environment in (
                 (destination_name, destination_env),
                 (source_name, source_env),

@@ -30,6 +30,12 @@ content. Raw CLI diagnostics, runtime authentication keys and unrelated paths
 are not collected as technical telemetry fields. Their recording alone does not schedule a
 backup, and missing historical snapshots are never invented.
 
+Backup history is imported directly into PostgreSQL through stdin, within a
+transaction. It needs no files readable by the database server user inside
+the container and no permission changes. An import error stops the restore;
+repeating the import does not duplicate existing records. Encryption and
+compatibility with existing archives remain unchanged.
+
 ## Archive format
 
 The outer file uses streaming AES-256-GCM with a random 96-bit nonce and an

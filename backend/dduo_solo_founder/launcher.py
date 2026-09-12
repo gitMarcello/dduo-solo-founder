@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 import getpass
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -896,6 +898,7 @@ def compose(
     project: dict,
     *args: str,
     capture_output: bool = False,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run Compose with the isolated environment for one project."""
     if str(project.get("binding") or "local") != "local":
@@ -930,7 +933,8 @@ def compose(
         env=env,
         check=False,
         capture_output=capture_output,
-        text=capture_output,
+        text=capture_output or input_text is not None,
+        **({"input": input_text, "encoding": "utf-8"} if input_text is not None else {}),
     )
 
 
@@ -3315,8 +3319,13 @@ def _wait_for_postgres(project: dict) -> None:
     raise BackupError("restored PostgreSQL service did not become ready")
 
 
-def _checked_compose(project: dict, *args: str) -> None:
-    result = compose(project, *args)
+def _checked_compose(project: dict, *args: str, input_text: str | None = None) -> None:
+    if input_text is None:
+        result = compose(project, *args)
+    else:
+        # PostgreSQL diagnostics can echo imported data. Keep them private and
+        # report only the static command and exit code if this import fails.
+        result = compose(project, *args, input_text=input_text, capture_output=True)
     if result.returncode:
         raise BackupError(
             f"docker compose {' '.join(args)} failed with exit code {result.returncode}"
@@ -3789,15 +3798,19 @@ def _restore_portable_backup_history(extracted: Path, project: dict) -> int:
     rows = _portable_backup_history_rows(extracted, str(project["id"]))
     if not rows:
         return 0
-    normalized = extracted / "backup-records.restore.json"
-    normalized.write_text(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
-    normalized.chmod(0o600)
-    _checked_compose(
-        project, "cp", str(normalized), "postgres:/tmp/dduo-backup-history.json"
+    # COPY consumes data from the client connection, not a server-owned file.
+    # This avoids host/container UID assumptions and never exposes archive
+    # contents in command arguments. CSV quoting keeps JSON entirely as data.
+    stream = io.StringIO(newline="")
+    csv.writer(stream, lineterminator="\n").writerow(
+        [json.dumps(rows, ensure_ascii=False, separators=(",", ":"))]
     )
     statement = """
+BEGIN;
+CREATE TEMP TABLE dduo_backup_history_import (payload jsonb) ON COMMIT DROP;
+COPY dduo_backup_history_import (payload) FROM STDIN WITH (FORMAT csv);
 WITH rows AS (
-  SELECT jsonb_array_elements(pg_read_file('/tmp/dduo-backup-history.json')::jsonb) AS item
+  SELECT jsonb_array_elements(payload) AS item FROM pg_temp.dduo_backup_history_import
 )
 INSERT INTO backup_records (
   id, project_id, trigger, status, archive_name, size_bytes, includes_qdrant,
@@ -3814,7 +3827,8 @@ SELECT
   NULLIF(item->>'completed_at', '')::timestamptz,
   NULLIF(item->>'verified_at', '')::timestamptz
 FROM rows
-ON CONFLICT (id) DO NOTHING
+ON CONFLICT (id) DO NOTHING;
+COMMIT;
 """.strip()
     _checked_compose(
         project,
@@ -3827,8 +3841,11 @@ ON CONFLICT (id) DO NOTHING
         "-d",
         "dduo_solo_founder",
         "--no-psqlrc",
+        "--set",
+        "ON_ERROR_STOP=1",
         "--command",
         statement,
+        input_text=stream.getvalue(),
     )
     return len(rows)
 

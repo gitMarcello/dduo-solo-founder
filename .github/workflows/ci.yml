@@ -60,6 +60,7 @@ jobs:
           tests/test_transfer_bind.py
           tests/test_transfer_https.py
           tests/test_backup_config.py
+          tests/test_backup_history_restore.py
           tests/test_bridge_auth.py
           tests/test_client_binding.py
           tests/test_client_installation.py
@@ -152,11 +153,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install production restore CLI for the two-host smoke
+        run: python -m pip install .
       - name: Validate Compose
         run: docker compose config >/dev/null
       - name: Build production images
         run: docker compose build api worker web
-      - name: Exercise two-stack authority handoff
+      - name: Exercise encrypted CLI restore, backup history, and two-stack authority handoff
         run: |
           docker build -t dduo-authority-smoke-api -f docker/api.Dockerfile .
           python3 scripts/e2e_authority_transfer.py
