@@ -40,6 +40,9 @@ export function useProjectData(enabled = true) {
   const [data, setData] = useState<ProjectData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [loadUnavailable, setLoadUnavailable] = useState(false);
+  const accessBlocked = useRef(false);
   const [backingUp, setBackingUp] = useState(false);
   const [schedulingSleep, setSchedulingSleep] = useState(false);
   const requestSequence = useRef(0);
@@ -48,25 +51,35 @@ export function useProjectData(enabled = true) {
 
   const refresh = useCallback(
     async ({ background = false }: { background?: boolean } = {}) => {
-      if (!enabled || !projectId) return;
+      if (!enabled || !projectId || (background && accessBlocked.current)) return;
       const sequence = ++requestSequence.current;
       if (!background) {
         setLoading(true);
         setError('');
+        accessBlocked.current = false;
+        setAccessDenied(false);
+        setLoadUnavailable(false);
       }
       try {
         const value = await api.loadProject(projectId);
         if (sequence === requestSequence.current && currentProject.current === projectId) {
           setData(value);
+          accessBlocked.current = false;
+          setAccessDenied(false);
+          setLoadUnavailable(false);
           localStorage.setItem(STORAGE_KEY, projectId);
         }
       } catch (reason) {
-        if (
-          !background &&
-          sequence === requestSequence.current &&
-          currentProject.current === projectId
-        ) {
-          setError(reason instanceof Error ? reason.message : String(reason));
+        if (sequence === requestSequence.current && currentProject.current === projectId) {
+          if (reason instanceof ApiError && [401, 403].includes(reason.status)) {
+            accessBlocked.current = true;
+            setAccessDenied(true);
+            setData(null);
+            setError('');
+          } else if (!background) {
+            setLoadUnavailable(!(reason instanceof ApiError) || reason.status >= 500);
+            setError(reason instanceof Error ? reason.message : String(reason));
+          }
         }
       } finally {
         if (sequence === requestSequence.current && currentProject.current === projectId) {
@@ -100,6 +113,9 @@ export function useProjectData(enabled = true) {
     currentProject.current = normalized;
     setData(null);
     setError('');
+    accessBlocked.current = false;
+    setAccessDenied(false);
+    setLoadUnavailable(false);
     setBackingUp(false);
     setSchedulingSleep(false);
     replaceProjectInUrl(normalized);
@@ -135,6 +151,9 @@ export function useProjectData(enabled = true) {
     setProjectId('');
     setData(null);
     setError('');
+    accessBlocked.current = false;
+    setAccessDenied(false);
+    setLoadUnavailable(false);
     setBackingUp(false);
     setSchedulingSleep(false);
   }
@@ -461,6 +480,8 @@ export function useProjectData(enabled = true) {
     data,
     loading,
     error,
+    accessDenied,
+    loadUnavailable,
     backingUp,
     schedulingSleep,
     connect,

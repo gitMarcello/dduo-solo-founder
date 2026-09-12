@@ -3,7 +3,7 @@
 <a id="troubleshooting"></a>
 # Risoluzione dei problemi
 
-Guida per dDuo Solo Founder `0.2.0-beta.1`. Nell'uso normale non dovrebbe
+Guida per dDuo Solo Founder `0.2.0-beta.2`. Nell'uso normale non dovrebbe
 servire una diagnosi tecnica: il lavoro del progetto resta disponibile anche
 quando la memoria locale o remota è temporaneamente irraggiungibile.
 
@@ -29,6 +29,27 @@ Per Claude questa verifica nativa non è disponibile: non significa che la
 cattura sia guasta o verificata. Se anche MCP e Skill non vengono caricati,
 dDuo non può mostrare l'avviso. La domanda è gestita dall'assistente, non è un
 blocco tecnico dell'intero agente di sviluppo.
+
+<a id="the-client-asks-approval-before-consolidating-remote-memory"></a>
+## Il client chiede conferma prima di consolidare la memoria remota
+
+Il controllo di sicurezza del client è distinto dall'autenticazione dDuo e da
+HTTPS. Una richiesta di conferma non significa, da sola, che la VPS sia insicura.
+
+`request_sleep` programma l'elaborazione dei turni già salvati nel progetto
+collegato, escludendo quelli fuori registrazione: il POST di programmazione non
+carica una nuova trascrizione. Passare l'ID noto della sessione limita la richiesta
+a quella conversazione; senza ID, un gestore/proprietario locale può richiedere
+il consolidamento dell'intero progetto. I worker inviano il materiale selezionato
+e il contesto pertinente a Codex/Claude e usano gli embedding configurati
+(OpenAI come impostazione predefinita). L'elaborazione può consumare abbonamento
+e, con gli embedding OpenAI, crediti API. L'operazione scrive lavori e può revisionare ricordi:
+non è di sola lettura.
+
+L'assistente deve spiegare questo ambito e rispettare l'approvazione o il rifiuto
+del client. Non disabilitare TLS, allentare i permessi o usare un altro comando
+per aggirare un rifiuto. Le descrizioni più precise riducono le ambiguità, ma non
+garantiscono che il client non chieda mai una conferma.
 
 <a id="setup-did-not-finish"></a>
 ## Setup non è terminato
@@ -189,10 +210,13 @@ accesso a Git o al VPS.
 <a id="the-remote-dashboard-says-unauthorized"></a>
 ## La dashboard remota mostra unauthorized
 
-Aprila con `dduo-solo-founder dashboard --tab tasks`. La CLI invia il bearer
-permanente solo all'API, ottiene un ticket monouso valido cinque minuti e apre
-la pagina. Il ticket diventa un cookie sicuro specifico del progetto. Non
-aggiungere manualmente un token dispositivo all'URL. Se l'accesso è stato
+Usa il link completo restituito da dDuo in chat: il suo token browser è
+riutilizzabile per sette giorni, anche da un browser nuovo. Un semplice URL
+senza quel token richiede una sessione browser già attiva. Per un link vecchio
+o scaduto chiedi all'agente un nuovo link (`get_dashboard_link`), oppure usa
+`dduo-solo-founder dashboard --tab tasks`. La pagina entra automaticamente e
+mantiene selezionato il Task/Piano richiesto: non devi riconfigurare il progetto.
+Non aggiungere manualmente un token dispositivo all'URL. Se l'accesso è stato
 revocato, il gestore deve autorizzare nuovamente il membro, senza condividere
 il token di un'altra persona.
 
@@ -205,7 +229,11 @@ destinazione ripristinata resta in sola lettura e restituisce una
 `activation_receipt`. Se rinunci a quel punto, elimina il clone ed esegui
 `remote-transfer-cancel --new-node-not-activated` sulla sorgente. Per
 proseguire, passa la ricevuta alla sorgente con
-`remote-transfer-retire --activation-receipt '<RECEIPT>' --yes`. La sorgente
+`remote-transfer-retire --activation-receipt '<RECEIPT>' --destination-api-url '<URL-API-HTTPS>' --yes`,
+usando l'URL API stampato da `remote-host`. La sorgente verifica certificato
+pubblico e percorso HTTPS completo fino al progetto esatto in sola lettura
+prima di finalizzare; un errore blocca ritiro e pulizia dei volumi. Non
+disabilitare TLS per aggirare errori di certificato o routing. La sorgente
 restituisce una `finalization_receipt`: usala sulla destinazione con
 `remote-host --public-ip <PUBLIC-IP> --finalization-receipt '<RECEIPT>'`
 per rendere scrivibile la nuova generazione.

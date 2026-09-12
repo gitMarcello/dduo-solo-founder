@@ -127,8 +127,9 @@ endpoints remain untouched. Git access must be granted separately.
 
 The authenticated manual is cached for outages; a cache failure warns without
 undoing the join. The agent opens the dashboard through
-`dduo-solo-founder dashboard --tab tasks --project-root .`, using a one-time
-browser ticket, not a bearer in the URL. See [Remote teams](remote-teams.md)
+`dduo-solo-founder dashboard --tab tasks --project-root .`, using a reusable
+seven-day browser link, never the permanent device bearer in the URL.
+Links returned in chat provide the same direct access. See [Remote teams](remote-teams.md)
 for hosting, invitations and transfer commands.
 
 Installation uses the checked distribution's frozen dependencies. Runtime and

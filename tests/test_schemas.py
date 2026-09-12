@@ -15,6 +15,7 @@ from dduo_solo_founder.schemas import (
     MemoryActionPayload,
     PlanCreate,
     PlanUpdate,
+    SleepRequest,
     StopCheck,
     TaskAction,
     TaskCreate,
@@ -23,6 +24,23 @@ from dduo_solo_founder.schemas import (
     TurnBegin,
     TurnCommit,
 )
+
+
+def test_sleep_request_describes_scope_without_changing_defaults_or_fields():
+    assert SleepRequest().model_dump() == {
+        "session_id": None, "provider": None, "resume_auth": False, "trigger": "manual",
+    }
+    schema = SleepRequest.model_json_schema()
+    assert set(schema["properties"]) == {"session_id", "provider", "resume_auth", "trigger"}
+    assert not schema.get("required")
+    descriptions = {name: field["description"] for name, field in schema["properties"].items()}
+    assert "all project sessions" in descriptions["session_id"]
+    assert "Other members must" in descriptions["session_id"]
+    assert "non-off-record" in descriptions["session_id"]
+    assert "Ignored for other triggers" in descriptions["provider"]
+    assert "Ignored for other triggers" in descriptions["resume_auth"]
+    assert "override automatic sleep-provider selection" in descriptions["provider"]
+    assert "does not mean consolidation has completed" in descriptions["trigger"]
 
 
 def exact_context_payload(content: str = "contesto già pronto") -> dict:

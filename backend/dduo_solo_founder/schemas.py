@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from dduo_solo_founder.link_privacy import redact_dashboard_access_tokens, redacted_render_version
+
 TaskStatus = Literal["todo", "in_progress", "blocked", "done", "cancelled"]
 TaskPriority = Literal["low", "medium", "high", "critical"]
 TaskKind = Literal["task", "epic"]
@@ -111,8 +113,16 @@ class BrowserSessionExchange(BaseModel):
     ticket: str = Field(
         min_length=52,
         max_length=128,
-        pattern=r"^dduo_web_[A-Za-z0-9_-]{43,}$",
+        pattern=r"^dduo_(?:web|link)_[A-Za-z0-9_-]{43,}$",
     )
+
+
+class AuthorityStatusRequest(BaseModel):
+    """Read a host's project authority before a manager token exists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class AuthorityNodeRequest(BaseModel):
@@ -164,6 +174,11 @@ class TurnBegin(BaseModel):
     limit: int = Field(default=8, ge=1, le=20)
     off_record: bool | None = None
 
+    @field_validator("user_prompt", mode="before")
+    @classmethod
+    def redact_access_links(cls, value):
+        return redact_dashboard_access_tokens(value)
+
 
 class RawEventCreate(BaseModel):
     session_id: str | None = None
@@ -180,12 +195,22 @@ class RawEventCreate(BaseModel):
     payload: dict = Field(default_factory=dict)
     actor: str = Field(default="agent", max_length=50)
 
+    @field_validator("payload", mode="before")
+    @classmethod
+    def redact_access_links(cls, value):
+        return redact_dashboard_access_tokens(value)
+
 
 class CompactionRecord(BaseModel):
     session_id: str
     phase: Literal["pre", "post"]
     trigger: Literal["manual", "auto", "unknown"] = "unknown"
     summary: str = Field(default="", max_length=100_000)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def redact_access_links(cls, value):
+        return redact_dashboard_access_tokens(value)
 
 
 ContextOperation = Literal[
@@ -490,6 +515,14 @@ class ContextObservation(BaseModel):
             raise ValueError("content snapshots require a component manifest")
         if sum(self.component_bytes.values()) != self.utf8_bytes:
             raise ValueError("content snapshot components must account for every UTF-8 byte")
+        # Validate the producer's original contract before applying the privacy
+        # boundary. Same-length masking preserves its numeric measurements;
+        # the stored hash and render label describe the redacted snapshot.
+        redacted = redact_dashboard_access_tokens(self.content)
+        if redacted != self.content:
+            self.content = redacted
+            self.content_sha256 = hashlib.sha256(redacted.encode("utf-8")).hexdigest()
+            self.render_version = redacted_render_version(self.render_version)
         return self
 
 
@@ -650,6 +683,11 @@ class StopCheck(BaseModel):
     receipt: str = ""
     context_observations: list[ContextObservation] = Field(default_factory=list, max_length=100)
 
+    @field_validator("assistant_response", "segment_summary", mode="before")
+    @classmethod
+    def redact_access_links(cls, value):
+        return redact_dashboard_access_tokens(value)
+
     @field_validator("context_observations", mode="before")
     @classmethod
     def keep_valid_context_observations(cls, value):
@@ -718,6 +756,11 @@ class TurnCommit(BaseModel):
     profile_update: ProjectUpdate | None = None
     used_memory_ids: list[str] | None = None
     receipt: str = ""
+
+    @field_validator("assistant_response", "segment_summary", mode="before")
+    @classmethod
+    def redact_access_links(cls, value):
+        return redact_dashboard_access_tokens(value)
 
     @model_validator(mode="after")
     def validate_segment(self):
@@ -922,9 +965,31 @@ class SessionPrivacyUpdate(BaseModel):
 
 
 class SleepRequest(BaseModel):
-    session_id: str | None = None
-    provider: Literal["codex", "claude"] | None = None
-    resume_auth: bool = False
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "Existing dDuo session ID in this project. Supply the known ID to target this "
+            "conversation; never invent it. Omitted/null lets an authorized manager or "
+            "trusted local owner schedule across all project sessions. Other members must "
+            "supply an authorized session. Only already-stored, non-off-record turns are selected."
+        ),
+    )
+    provider: Literal["codex", "claude"] | None = Field(
+        default=None,
+        description=(
+            "For trigger=session_start only: provider whose authentication on the memory "
+            "host was verified after reconnecting. Does not select the chat account or "
+            "override automatic sleep-provider selection. Ignored for other triggers."
+        ),
+    )
+    resume_auth: bool = Field(
+        default=False,
+        description=(
+            "For trigger=session_start only: resume auth-blocked jobs after the supplied "
+            "provider was verified on the memory host. Does not log in, grant permission "
+            "or bypass authentication. Ignored for other triggers."
+        ),
+    )
     trigger: Literal[
         "manual",
         "session_start",
@@ -932,7 +997,15 @@ class SleepRequest(BaseModel):
         "compaction",
         "idle",
         "threshold",
-    ] = "manual"
+    ] = Field(
+        default="manual",
+        description=(
+            "Reason for scheduling: manual for an explicit request; topic_boundary, "
+            "compaction, idle or threshold for the corresponding lifecycle event. "
+            "session_start also checks eligible paused jobs for resumption. This queues "
+            "work; it does not mean consolidation has completed."
+        ),
+    )
 
 
 class MemoryForget(BaseModel):

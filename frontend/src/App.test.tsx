@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
-import { api } from './api';
+import { ApiError, api } from './api';
 import type { Plan, ProjectData, Task } from './types';
 
 // Sprint lifecycle and paginated reads have their own component and browser
@@ -308,7 +308,10 @@ describe('App', () => {
     expect(api.exchangeBrowserSession).toHaveBeenCalledTimes(1);
   });
 
-  it('retries a transient browser-ticket exchange without restoring the secret to the URL', async () => {
+  it.each([
+    'Retry browser access',
+    'Refresh current view',
+  ])('retries a transient browser-ticket exchange through %s without restoring the secret to the URL', async (retryButton) => {
     const user = userEvent.setup();
     vi.mocked(api.exchangeBrowserSession)
       .mockRejectedValueOnce(new Error('Gateway temporarily unavailable'))
@@ -321,14 +324,129 @@ describe('App', () => {
     window.history.replaceState(null, '', '/?project=p1&tab=tasks&ticket=dduo_web_retry');
     render(<App />);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Gateway temporarily unavailable');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The memory server could not be reached',
+    );
     expect(window.location.search).not.toContain('ticket=');
     expect(api.loadProject).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Retry browser access' }));
+    await user.click(screen.getByRole('button', { name: retryButton }));
 
     expect(await screen.findByText('Release Android')).toBeInTheDocument();
     expect(api.exchangeBrowserSession).toHaveBeenNthCalledWith(2, 'p1', 'dduo_web_retry');
     expect(window.location.search).not.toContain('ticket=');
+  });
+
+  it.each([
+    'work=t1',
+    'plan=plan-1',
+  ])('automatically reuses the same seven-day link in new mounts and preserves %s destination', async (destination) => {
+    const token = `dduo_link_${'a'.repeat(43)}`;
+    const url = `/?project=p1&tab=tasks&${destination}&access_token=${token}`;
+    vi.mocked(api.loadProject).mockResolvedValue({ ...projectData, plans: [plan] });
+    for (let visit = 1; visit <= 2; visit += 1) {
+      window.history.replaceState(null, '', url);
+      const view = render(<App />);
+      await waitFor(() => expect(api.exchangeBrowserSession).toHaveBeenCalledTimes(visit));
+      expect(api.exchangeBrowserSession).toHaveBeenLastCalledWith('p1', token);
+      expect(await screen.findByRole('heading', { name: 'Card Project' })).toBeInTheDocument();
+      expect(window.location.search).toBe(`?project=p1&tab=tasks&${destination}`);
+      expect(screen.queryByRole('button', { name: /confirm/i })).not.toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it.each([
+    '?project=p1&project=p2&ticket=dduo_web_secret',
+    '?project=p1&ticket=a&ticket=b',
+    `?project=p1&access_token=dduo_link_${'a'.repeat(43)}&ticket=dduo_web_secret`,
+    '?project=p1&access_token=permanent-token',
+    '?access_token=dduo_link_missing_project',
+    '?project=p1&project=p2',
+  ])('rejects ambiguous or malformed access without loading another project: %s', async (query) => {
+    localStorage.setItem('dduo-solo-founder-project', 'unrelated-project');
+    window.history.replaceState(null, '', `/${query}`);
+    render(<App />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('incomplete or ambiguous');
+    expect(api.exchangeBrowserSession).not.toHaveBeenCalled();
+    expect(api.loadProject).not.toHaveBeenCalled();
+    expect(api.health).not.toHaveBeenCalled();
+    expect(window.location.search).not.toContain('access_token=');
+    expect(window.location.search).not.toContain('ticket=');
+    expect(screen.getByRole('button', { name: 'Work' }).querySelector('small')).toBeNull();
+    expect(screen.getByText('Memory status not verified')).toBeInTheDocument();
+  });
+
+  it('keeps a valid existing project cookie usable when the supplied link has expired', async () => {
+    vi.mocked(api.exchangeBrowserSession).mockRejectedValueOnce(new ApiError('expired', 401));
+    window.history.replaceState(
+      null,
+      '',
+      `/?project=p1&tab=tasks&access_token=dduo_link_${'a'.repeat(43)}`,
+    );
+    render(<App />);
+    expect(await screen.findByText('Release Android')).toBeInTheDocument();
+    expect(api.team).toHaveBeenCalledWith('p1');
+    expect(api.exchangeBrowserSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['access_token', `dduo_link_${'a'.repeat(43)}`, 'Access has expired or is missing'],
+    ['ticket', 'dduo_web_expired', 'This older access link has expired or was already used'],
+  ])('explains expired %s in IT/EN without retrying rejected credentials', async (parameter, token, expected) => {
+    const user = userEvent.setup();
+    vi.mocked(api.exchangeBrowserSession).mockRejectedValue(
+      new ApiError('secret-error-do-not-display', 401),
+    );
+    vi.mocked(api.team).mockRejectedValue(new ApiError('unauthorized', 401));
+    window.history.replaceState(null, '', `/?project=p1&tab=tasks&work=t1&${parameter}=${token}`);
+    render(<App />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(expected);
+    expect(api.loadProject).not.toHaveBeenCalled();
+    expect(api.exchangeBrowserSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Retry browser access' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Memory online')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Italian' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Chiedi al tuo assistente un nuovo link');
+    expect(api.exchangeBrowserSession).toHaveBeenCalledTimes(1);
+    expect(window.location.search).toBe('?project=p1&tab=tasks&work=t1');
+    expect(document.body.textContent).not.toContain('secret-error-do-not-display');
+  });
+
+  it('handles an unauthorized ordinary deep link without showing an empty project or online memory', async () => {
+    vi.mocked(api.loadProject).mockRejectedValueOnce(new ApiError('unauthorized', 401));
+    window.history.replaceState(null, '', '/?project=p1&tab=tasks&work=t1');
+    render(<App />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Ask your assistant for a new link to this page',
+    );
+    expect(screen.queryByText('Memory online')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Connect a project' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Work' }).querySelector('small')).toBeNull();
+    expect(window.location.search).toBe('?project=p1&tab=tasks&work=t1');
+    expect(api.exchangeBrowserSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'team',
+    'observability',
+  ])('refreshes the exact project after authorization failure on the %s tab', async (tab) => {
+    const user = userEvent.setup();
+    vi.mocked(api.loadProject).mockRejectedValueOnce(new ApiError('expired', 401));
+    window.history.replaceState(null, '', `/?project=p1&tab=${tab}&work=t1`);
+    render(<App />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Access has expired or is missing');
+    expect(api.team).not.toHaveBeenCalled();
+    expect(api.observabilitySummary).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Refresh current view' }));
+    await waitFor(() => expect(api.loadProject).toHaveBeenCalledTimes(2));
+    expect(api.loadProject).toHaveBeenLastCalledWith('p1');
+    expect(await screen.findByRole('heading', { name: 'Card Project' })).toBeInTheDocument();
+    expect(vi.mocked(api.team).mock.calls.every(([projectId]) => projectId === 'p1')).toBe(true);
+    expect(
+      vi.mocked(api.observabilitySummary).mock.calls.every(([projectId]) => projectId === 'p1'),
+    ).toBe(true);
+    expect(window.location.search).toBe(`?project=p1&tab=${tab}&work=t1`);
   });
 
   it('lazily loads observability from a dashboard deep link', async () => {
@@ -581,7 +699,7 @@ describe('App', () => {
 
   it('shows retrieval failures', async () => {
     localStorage.setItem('dduo-solo-founder-project', 'missing');
-    vi.mocked(api.loadProject).mockRejectedValue(new Error('project not found'));
+    vi.mocked(api.loadProject).mockRejectedValue(new ApiError('project not found', 404));
     render(<App />);
     expect(await screen.findByRole('alert')).toHaveTextContent('project not found');
   });

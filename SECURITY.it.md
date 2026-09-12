@@ -106,5 +106,9 @@ progetto e archivio indicati prima di approvare.
 Il trasferimento congela la sorgente prima del backup finale. Annullare richiede
 `--new-node-not-activated`. Quando la destinazione ripristinata restituisce
 `destination_ready` e HTTPS è verificato, ritirare la sorgente con
-`remote-transfer-retire --activation-receipt '<RICEVUTA>' --yes`.
+`remote-transfer-retire --activation-receipt '<RICEVUTA>' --destination-api-url '<URL-API-HTTPS>' --yes`,
+usando l'URL API pubblico esatto stampato da `remote-host`. Prima di finalizzare,
+la sorgente controlla autonomamente certificato TLS, percorso HTTPS completo
+fino all'API e identità del trasferimento. Gli errori TLS bloccano ritiro e
+pulizia dei volumi: non disabilitare la verifica dei certificati per proseguire.
 Non annullare dopo che la sorgente ha restituito la ricevuta finale.

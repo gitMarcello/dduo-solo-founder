@@ -5,7 +5,7 @@ import json
 import os
 import re
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -472,6 +472,9 @@ def test_compose_loads_environment_without_overwriting_process(monkeypatch, tmp_
     assert captured["env"]["OPENAI_API_KEY"] == "project-key"
     assert captured["env"]["EMBEDDING_MODEL"] == "model"
     assert captured["args"][-1] == "ps"
+    assert "timeout" not in captured
+    launcher.compose({"id": "p1", "api_port": 1, "web_port": 2}, "ps", timeout=12)
+    assert captured["timeout"] == 12
 
 
 def test_launcher_small_fail_closed_branches(monkeypatch, tmp_path):
@@ -2093,7 +2096,7 @@ def test_team_invite_requires_a_gateway_and_dashboard(monkeypatch, tmp_path):
     assert "dashboard URL is unavailable" in str(no_dashboard.exception)
 
 
-def test_remote_dashboard_uses_one_time_ticket_and_redacts_output(monkeypatch, tmp_path):
+def test_remote_dashboard_uses_reusable_link_and_redacts_output(monkeypatch, tmp_path):
     project = {
         "id": "p1",
         "name": "TeamApp",
@@ -2108,11 +2111,15 @@ def test_remote_dashboard_uses_one_time_ticket_and_redacts_output(monkeypatch, t
     monkeypatch.setattr(launcher, "find_workspace_root", lambda _: tmp_path)
     monkeypatch.setattr(launcher, "load_project", lambda _: project)
     monkeypatch.setattr(launcher, "binding_from_project", lambda *args, **kwargs: binding)
-    monkeypatch.setattr(
-        launcher,
-        "_api_request",
-        lambda *args, **kwargs: {"ticket": "dduo_web_private-ticket"},
-    )
+    raw_link = "dduo_link_" + "r" * 43
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    requests = []
+
+    def api_request(_project, method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        return {"token": raw_link, "expires_at": expires_at, "reusable": True}
+
+    monkeypatch.setattr(launcher, "_api_request", api_request)
     opened = []
     monkeypatch.setattr(launcher.webbrowser, "open", lambda url: opened.append(url))
     result = runner.invoke(
@@ -2120,9 +2127,10 @@ def test_remote_dashboard_uses_one_time_ticket_and_redacts_output(monkeypatch, t
         ["dashboard", "--project-root", str(tmp_path), "--tab", "team"],
     )
     assert result.exit_code == 0
-    assert "dduo_web_private-ticket" in opened[0]
-    assert "dduo_web_private-ticket" not in result.stdout
-    assert "ticket=<one-time>" in result.stdout
+    assert opened == [f"https://8.8.8.8/?project=p1&tab=team&access_token={raw_link}"]
+    assert raw_link not in result.stdout
+    assert "access_token=<private-seven-day-link>" in result.stdout
+    assert requests == [("POST", "/projects/p1/auth/browser-link", {"timeout": 30})]
 
 
 def test_dashboard_covers_vps_host_local_and_invalid_routes(monkeypatch, tmp_path):
@@ -2149,18 +2157,24 @@ def test_dashboard_covers_vps_host_local_and_invalid_routes(monkeypatch, tmp_pat
         "_gateway_project",
         lambda _project_id: {"dashboard_url": "https://203.0.113.10:9443"},
     )
-    monkeypatch.setattr(
-        launcher,
-        "_api_request",
-        lambda *_args, **_kwargs: {"ticket": "private-host-ticket"},
-    )
+    raw_link = "dduo_link_" + "h" * 43
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    requests = []
+
+    def api_request(_project, method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        return {"token": raw_link, "expires_at": expires_at, "reusable": True}
+
+    monkeypatch.setattr(launcher, "_api_request", api_request)
     hosted = runner.invoke(
         launcher.app,
         ["dashboard", "--project-root", str(tmp_path), "--tab", "observability"],
     )
     assert hosted.exit_code == 0
-    assert "private-host-ticket" in opened[-1]
-    assert "private-host-ticket" not in hosted.stdout
+    assert opened[-1] == f"https://203.0.113.10:9443/?project=p1&tab=observability&access_token={raw_link}"
+    assert raw_link not in hosted.stdout
+    assert "access_token=<private-seven-day-link>" in hosted.stdout
+    assert requests == [("POST", "/projects/p1/auth/browser-link", {"timeout": 30})]
 
     monkeypatch.setattr(launcher, "_gateway_project", lambda _project_id: None)
     missing_gateway = runner.invoke(
@@ -2188,6 +2202,7 @@ def test_dashboard_covers_vps_host_local_and_invalid_routes(monkeypatch, tmp_pat
     )
     assert local.exit_code == 0
     assert opened[-1].endswith("project=p1&tab=memory")
+    assert len(requests) == 1
 
     invalid = runner.invoke(
         launcher.app,
@@ -2219,6 +2234,10 @@ def test_remote_host_orchestrates_isolated_stack_and_gateway(monkeypatch, tmp_pa
     monkeypatch.setattr(launcher, "load_project_secrets", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(launcher, "ensure_remote_runtime_secrets", lambda _: None)
     phases = []
+    monkeypatch.setattr(
+        launcher, "_require_remote_bridge_connectivity",
+        lambda *args: phases.append("container-bridge"),
+    )
     monkeypatch.setattr(
         launcher,
         "_prepare_remote_database",
@@ -2272,7 +2291,22 @@ def test_remote_host_orchestrates_isolated_stack_and_gateway(monkeypatch, tmp_pa
     assert '"firewall_ports": [' in result.stdout
     assert "443" in result.stdout and "24443" in result.stdout
     assert "keep TCP 443 open permanently" in result.stdout
-    assert phases == [("database", "safe-password"), "claim", "bootstrap"]
+    assert phases == [("database", "safe-password"), "container-bridge", "claim", "bootstrap"]
+    assert '"container_bridge_verified": true' in result.stdout
+
+    # A healthy host-side agent cannot certify the container network path.
+    phases.clear()
+    monkeypatch.setattr(
+        launcher, "_require_remote_bridge_connectivity",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("container cannot reach host")),
+    )
+    failed = runner.invoke(
+        launcher.app,
+        ["remote-host", "--public-ip", "8.8.8.8", "--project-root", str(tmp_path)],
+    )
+    assert failed.exit_code != 0
+    assert phases == [("database", "safe-password")]
+    assert "owner-token" not in failed.stdout
 
 
 def test_remote_host_refuses_promotion_without_reboot_safe_bridge(monkeypatch, tmp_path):
@@ -2857,20 +2891,32 @@ def test_remote_authority_preflights_fail_closed_before_mutation(monkeypatch, tm
     with pytest.raises(RuntimeError, match="verified full-project-v2 restore"):
         launcher._verified_recovery_marker(tmp_path, "p1")
 
+    monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+    with pytest.raises(RuntimeError, match="authority credential is unavailable"):
+        launcher._claim_remote_authority(tmp_path, project)
+
     monkeypatch.setattr(
         launcher,
-        "_api_request",
-        lambda *args, **kwargs: {"state": "uninitialized", "generation": 0},
+        "load_project_secrets",
+        lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
     )
-    monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            assert method == "POST" and path == "/projects/p1/authority/status"
+            assert kwargs["headers"]["X-DDUO-Authority"] == "authority-secret"
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {"state": "uninitialized", "generation": 0},
+            )
+
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
     with pytest.raises(RuntimeError, match="transfer-pending"):
         launcher._claim_remote_authority(
             tmp_path,
             project,
             finalization_receipt="receipt",
         )
-    with pytest.raises(RuntimeError, match="authority credential is unavailable"):
-        launcher._claim_remote_authority(tmp_path, project)
 
 
 def test_login_codex_imports_only_the_explicitly_selected_profile(monkeypatch, tmp_path):
@@ -3213,6 +3259,7 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
     monkeypatch.setattr(launcher, "_prepare_remote_database", lambda *args: None)
     monkeypatch.setattr(launcher, "set_local_deployment_mode", lambda *args: hosted)
     monkeypatch.setattr(launcher, "_restart_remote_stack", lambda *args: None)
+    monkeypatch.setattr(launcher, "_require_remote_bridge_connectivity", lambda *args: None)
     monkeypatch.setattr(
         launcher,
         "_claim_remote_authority",
@@ -3246,6 +3293,10 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
         },
     )
     monkeypatch.setattr(launcher, "write_caddyfile", lambda: None)
+    probes = []
+    monkeypatch.setattr(
+        launcher, "_verify_destination_https", lambda *args, **kwargs: probes.append((args, kwargs))
+    )
     monkeypatch.setattr(
         launcher,
         "_gateway_compose",
@@ -3262,6 +3313,20 @@ def test_remote_host_defers_manager_bootstrap_while_destination_is_read_only(
     assert '"manager_bootstrapped": false' in result.stdout
     assert "dduo_authority_v1.ready.signed" in result.stdout
     assert "authority_handoff_pending" in result.stdout
+    assert probes[0][0][0] == "https://8.8.8.8/api"
+    assert probes[0][1] == {"wait_seconds": 60}
+    assert '"https_verified": true' in result.stdout
+
+    monkeypatch.setattr(
+        launcher, "_verify_destination_https",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("TLS verification failed")),
+    )
+    failed = runner.invoke(
+        launcher.app,
+        ["remote-host", "--public-ip", "8.8.8.8", "--project-root", str(tmp_path)],
+    )
+    assert failed.exit_code != 0
+    assert "activation_receipt" not in failed.stdout
 
 
 def test_remote_transfer_prepare_freezes_before_requesting_final_backup(monkeypatch, tmp_path):
@@ -3305,7 +3370,7 @@ def test_remote_transfer_prepare_freezes_before_requesting_final_backup(monkeypa
                 "id": "backup-final",
                 "status": "verified",
                 "archive_name": "final.dduobackup",
-                "manifest_json": {
+                "manifest": {
                     "schema_version": 2,
                     "recovery_contract": "full-project-v2",
                     "project": {"id": "p1"},
@@ -3358,7 +3423,7 @@ def test_final_transfer_backup_must_contain_the_current_authority_secret():
     backup = {
         "status": "verified",
         "archive_name": "final.dduobackup",
-        "manifest_json": {
+        "manifest": {
             "schema_version": 2,
             "recovery_contract": "full-project-v2",
             "project": {"id": "p1"},
@@ -3462,8 +3527,9 @@ def test_remote_transfer_cancel_requires_explicit_pre_activation_attestation(
     ]
 
 
+@pytest.mark.parametrize("lose_finalization_ack", [False, True])
 def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, lose_finalization_ack,
 ):
     project = {"id": "p1", "name": "TeamApp", "api_port": 18001, "web_port": 20001}
     monkeypatch.setattr(launcher, "find_workspace_root", lambda _: tmp_path)
@@ -3481,14 +3547,26 @@ def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
     )
     proof, finalized_payload = finalization_proof()
     calls = []
+    source_state = "transfer_pending"
+    pending_ack_loss = False
 
     def request(_context, method, path, **kwargs):
+        nonlocal source_state, pending_ack_loss
         calls.append((method, path, kwargs.get("json_body")))
         if path.endswith("/authority"):
-            return {"state": "transfer_pending", "generation": 5}
+            return {"state": source_state, "generation": 5}
+        source_state = "transferred"
+        if pending_ack_loss:
+            pending_ack_loss = False
+            raise RuntimeError("connection lost after database committed finalization")
         return {**finalized_payload, "finalization_receipt": proof}
 
     monkeypatch.setattr(launcher, "_api_request", request)
+    def probe(*args):
+        assert args[0] == "https://destination.example/api"
+        calls.append(("HTTPS", args[0], None))
+
+    monkeypatch.setattr(launcher, "_verify_destination_https", probe)
     compose_calls = []
     def compose_after_receipt_is_durable(*args, **kwargs):
         compose_calls.append(args[1:])
@@ -3526,12 +3604,53 @@ def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
     assert refused.exit_code != 0
     assert calls == [] and compose_calls == []
 
+    missing_url = runner.invoke(
+        launcher.app,
+        ["remote-transfer-retire", "--activation-receipt", "ready", "--yes",
+         "--project-root", str(tmp_path)],
+    )
+    assert missing_url.exit_code != 0
+    assert calls == [] and compose_calls == []
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            launcher, "_verify_destination_https",
+            lambda *args: (_ for _ in ()).throw(RuntimeError("TLS verification failed")),
+        )
+        failed = runner.invoke(
+            launcher.app,
+            ["remote-transfer-retire", "--activation-receipt", "ready", "--yes",
+             "--destination-api-url", "https://destination.example/api",
+             "--project-root", str(tmp_path)],
+        )
+        assert failed.exit_code != 0
+        assert calls == [("GET", "/projects/p1/authority", None)]
+        assert compose_calls == []
+        assert not (tmp_path / launcher.RETIRED_NODE_FILE).exists()
+    calls.clear()
+
+    if lose_finalization_ack:
+        pending_ack_loss = True
+        lost = runner.invoke(
+            launcher.app,
+            ["remote-transfer-retire", "--activation-receipt", "ready", "--yes",
+             "--destination-api-url", "https://destination.example/api",
+             "--project-root", str(tmp_path)],
+        )
+        assert lost.exit_code != 0
+        assert source_state == "transferred"
+        assert compose_calls == []
+        assert not (tmp_path / launcher.RETIRED_NODE_FILE).exists()
+        calls.clear()
+
     retired = runner.invoke(
         launcher.app,
         [
             "remote-transfer-retire",
             "--activation-receipt",
             "dduo_authority_v1.ready.signed",
+            "--destination-api-url",
+            "https://destination.example/api",
             "--yes",
             "--project-root",
             str(tmp_path),
@@ -3540,6 +3659,7 @@ def test_remote_transfer_retire_requires_receipt_and_returns_completion_proof(
     assert retired.exit_code == 0
     assert calls == [
         ("GET", "/projects/p1/authority", None),
+        ("HTTPS", "https://destination.example/api", None),
         (
             "POST",
             "/projects/p1/authority/finalize?expected_generation=5",
@@ -3810,6 +3930,11 @@ def test_claim_remote_authority_is_idempotent_and_rejects_live_or_retired_source
 ):
     project = {"id": "p1", "api_port": 18001, "web_port": 20001}
     monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+    monkeypatch.setattr(
+        launcher,
+        "load_project_secrets",
+        lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
+    )
     statuses = iter(
         [
             {"state": "active", "generation": 2, "node_id": "node-new"},
@@ -3817,7 +3942,15 @@ def test_claim_remote_authority_is_idempotent_and_rejects_live_or_retired_source
             {"state": "transferred", "generation": 2, "node_id": "node-old"},
         ]
     )
-    monkeypatch.setattr(launcher, "_api_request", lambda *args, **kwargs: next(statuses))
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            assert method == "POST" and path == "/projects/p1/authority/status"
+            assert kwargs["json"] == {"node_id": "node-new"}
+            assert kwargs["headers"]["X-DDUO-Authority"] == "authority-secret"
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: next(statuses))
+
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
     current = launcher._claim_remote_authority(tmp_path, project)
     assert current["node_id"] == "node-new"
     with pytest.raises(RuntimeError, match="another node"):
@@ -3837,11 +3970,6 @@ def test_claim_remote_authority_uses_secret_for_expected_generation(
     monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
     monkeypatch.setattr(
         launcher,
-        "_api_request",
-        lambda *args, **kwargs: {"state": state, "generation": 7, "node_id": None},
-    )
-    monkeypatch.setattr(
-        launcher,
         "load_project_secrets",
         lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
     )
@@ -3850,29 +3978,36 @@ def test_claim_remote_authority_uses_secret_for_expected_generation(
         "binding_from_project",
         lambda *args, **kwargs: SimpleNamespace(remote=False),
     )
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"state": "active", "generation": 8, "node_id": "node-new"}
+    captured = []
+    clients = []
 
     class Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
         def request(self, method, path, **kwargs):
-            captured.update(method=method, path=path, **kwargs)
-            return Response()
+            captured.append({"method": method, "path": path, **kwargs})
+            payload = (
+                {"state": state, "generation": 7, "node_id": None}
+                if path.endswith("/status")
+                else {"state": "active", "generation": 8, "node_id": "node-new"}
+            )
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
 
-    monkeypatch.setattr(launcher, "ProjectHttpClient", Client)
+    def client(binding):
+        instance = Client()
+        clients.append(instance)
+        return instance
+
+    monkeypatch.setattr(launcher, "_launcher_client", client)
     result = launcher._claim_remote_authority(tmp_path, project)
     assert result["state"] == "active"
-    assert captured["path"] == f"/projects/p1/authority/{operation}"
-    assert captured["headers"]["X-DDUO-Authority"] == "authority-secret"
-    assert captured["json"] == {"node_id": "node-new", "expected_generation": 7}
+    assert len(clients) == 1
+    assert len(captured) == 2
+    assert captured[0]["path"] == "/projects/p1/authority/status"
+    assert captured[0]["json"] == {"node_id": "node-new"}
+    assert captured[1]["path"] == f"/projects/p1/authority/{operation}"
+    assert captured[1]["json"] == {"node_id": "node-new", "expected_generation": 7}
+    for request in captured:
+        assert request["method"] == "POST"
+        assert request["headers"]["X-DDUO-Authority"] == "authority-secret"
 
 
 def test_claim_remote_authority_completes_only_with_source_receipt(monkeypatch, tmp_path):
@@ -3880,15 +4015,6 @@ def test_claim_remote_authority_completes_only_with_source_receipt(monkeypatch, 
     monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
     monkeypatch.setattr(
         launcher,
-        "_api_request",
-        lambda *args, **kwargs: {
-            "state": "transfer_pending",
-            "generation": 7,
-            "node_id": "node-old",
-        },
-    )
-    monkeypatch.setattr(
-        launcher,
         "load_project_secrets",
         lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
     )
@@ -3897,41 +4023,71 @@ def test_claim_remote_authority_completes_only_with_source_receipt(monkeypatch, 
         "binding_from_project",
         lambda *args, **kwargs: SimpleNamespace(remote=False),
     )
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "state": "active",
-                "generation": 8,
-                "node_id": "node-new",
-                "writable": True,
-            }
+    captured = []
 
     class Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
         def request(self, method, path, **kwargs):
-            captured.update(method=method, path=path, **kwargs)
-            return Response()
+            captured.append({"method": method, "path": path, **kwargs})
+            payload = (
+                {"state": "transfer_pending", "generation": 7, "node_id": "node-old"}
+                if path.endswith("/status")
+                else {
+                    "state": "active", "generation": 8, "node_id": "node-new", "writable": True
+                }
+            )
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
 
-    monkeypatch.setattr(launcher, "ProjectHttpClient", Client)
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
     result = launcher._claim_remote_authority(
         tmp_path,
         project,
         finalization_receipt="dduo_authority_v1.final.signed",
     )
     assert result["state"] == "active"
-    assert captured["path"] == "/projects/p1/authority/complete"
-    assert captured["json"] == {
+    assert len(captured) == 2
+    assert captured[0]["path"] == "/projects/p1/authority/status"
+    assert captured[0]["json"] == {"node_id": "node-new"}
+    assert captured[1]["path"] == "/projects/p1/authority/complete"
+    assert captured[1]["json"] == {
         "node_id": "node-new",
         "expected_generation": 7,
         "finalization_receipt": "dduo_authority_v1.final.signed",
     }
+
+
+def test_claim_remote_authority_can_read_status_without_a_registered_manager_bearer(
+    monkeypatch, tmp_path
+):
+    project = {"id": "p1", "api_port": 18001, "web_port": 20001}
+    monkeypatch.setattr(launcher, "remote_node_id", lambda: "node-new")
+    monkeypatch.setattr(
+        launcher,
+        "load_project_secrets",
+        lambda *args, **kwargs: {"DDUO_NODE_AUTHORITY_SECRET": "authority-secret"},
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_api_request",
+        lambda *args, **kwargs: pytest.fail("manager-only GET must not precede authority bootstrap"),
+    )
+    captured = []
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            assert method == "POST"
+            assert kwargs["headers"] == {"X-DDUO-Authority": "authority-secret"}
+            captured.append(path)
+            payload = (
+                {"state": "transfer_pending", "generation": 7, "node_id": "node-old"}
+                if path.endswith("/status")
+                else {"state": "transfer_pending", "generation": 7, "writable": False}
+            )
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+
+    monkeypatch.setattr(launcher, "_launcher_client", lambda _binding: Client())
+    result = launcher._claim_remote_authority(tmp_path, project)
+    assert captured == ["/projects/p1/authority/status", "/projects/p1/authority/activate"]
+    assert result["writable"] is False
 
 
 def backup_archive(tmp_path: Path, *, qdrant: bool = True):
@@ -4616,11 +4772,16 @@ def test_portable_backup_history_restore_is_validated_and_parameter_free(monkeyp
     history.write_text(json.dumps([row]))
     calls = []
     monkeypatch.setattr(
-        launcher, "_checked_compose", lambda *args: calls.append(args[1:])
+        launcher, "_checked_compose", lambda *args, **kwargs: calls.append((args[1:], kwargs))
     )
     assert launcher._restore_portable_backup_history(tmp_path, project) == 1
-    assert calls[0][0] == "cp"
-    assert calls[1][0] == "exec" and "pg_read_file" in calls[1][-1]
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:3] == ("exec", "-T", "postgres")
+    assert "COPY dduo_backup_history_import (payload) FROM STDIN WITH (FORMAT csv)" in args
+    assert "--single-transaction" in args and "pg_read_file" not in " ".join(args)
+    assert "input_text" in kwargs
+    assert not (tmp_path / "backup-records.restore.json").exists()
 
 
 def test_existing_restore_target_requires_verified_safety_backup(monkeypatch, tmp_path):
@@ -4863,12 +5024,20 @@ def test_backup_verify_command(monkeypatch, tmp_path):
 
 def test_backup_restore_drill_uses_disposable_database(monkeypatch, tmp_path):
     commands = []
+    readiness = iter([1, 0])
 
     def run(command, **kwargs):
         commands.append(command)
         joined = " ".join(command)
         if "pg_isready" in command:
-            return SimpleNamespace(returncode=0, stdout="ready", stderr="")
+            # The initialization socket can be ready before the final TCP server.
+            assert command[command.index("pg_isready") + 1:] == [
+                "-h", "127.0.0.1", "-U", "dduo", "-d", "dduo_restore_drill",
+            ]
+            assert not any("pg_restore" in previous for previous in commands)
+            return SimpleNamespace(returncode=next(readiness), stdout="", stderr="")
+        if "pg_restore" in command:
+            assert sum("pg_isready" in previous for previous in commands) == 2
         if "select id from projects order by id" in joined:
             return SimpleNamespace(returncode=0, stdout="p1\n", stderr="")
         if "select 'projects', count(*)" in joined:
@@ -4880,10 +5049,33 @@ def test_backup_restore_drill_uses_disposable_database(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
     counts = launcher._restore_drill(tmp_path, "p1")
     assert counts == {"projects": 1, "tasks": 3, "memories": 2, "turns": 4}
     assert commands[0][:3] == ["docker", "run", "--detach"]
     assert any("pg_restore" in command for command in commands)
+    assert commands[-1][:3] == ["docker", "rm", "--force"]
+
+
+def test_backup_restore_drill_readiness_timeout_cleans_up_without_restore(
+    monkeypatch, tmp_path
+):
+    commands = []
+    times = iter([0, 1, 91])
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if "pg_isready" in command:
+            assert command[command.index("-h") + 1] == "127.0.0.1"
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+    with pytest.raises(BackupError, match="did not become ready"):
+        launcher._restore_drill(tmp_path, "p1")
+    assert not any("pg_restore" in command for command in commands)
     assert commands[-1][:3] == ["docker", "rm", "--force"]
 
 
@@ -4943,9 +5135,19 @@ def test_backup_drill_command_verifies_latest_or_selected_archive(monkeypatch, t
 
 def test_postgres_wait_and_checked_compose(monkeypatch):
     results = iter([SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)])
-    monkeypatch.setattr(launcher, "compose", lambda *args: next(results))
+    commands = []
+
+    def compose(*args):
+        commands.append(args)
+        assert args[args.index("pg_isready") + 1:] == (
+            "-h", "127.0.0.1", "-U", "dduo_solo_founder", "-d", "dduo_solo_founder",
+        )
+        return next(results)
+
+    monkeypatch.setattr(launcher, "compose", compose)
     monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
     launcher._wait_for_postgres({"id": "p"})
+    assert len(commands) == 2
     monkeypatch.setattr(launcher, "compose", lambda *args: SimpleNamespace(returncode=4))
     with pytest.raises(BackupError, match="exit code 4"):
         launcher._checked_compose({"id": "p"}, "up")

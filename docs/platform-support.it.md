@@ -2,7 +2,7 @@
 
 # Piattaforme e prima installazione su VPS
 
-La release `0.2.0-beta.1` supporta le **CLI** di Codex e Claude Code su macOS e
+La release `0.2.0-beta.2` supporta le **CLI** di Codex e Claude Code su macOS e
 Windows nativi, con memoria locale o su VPS Linux. Sul computer servono Node.js
 18+, Git e il client selezionato; Docker Desktop serve solo per la memoria
 locale. Sul server servono Docker/Compose, Git, Node.js 18+ e almeno un client
@@ -113,7 +113,7 @@ Eseguire dal checkout autorizzato del progetto sulla VPS:
 
 ```bash
 dduo_install_dir="$(mktemp -d)"
-git clone --depth 1 --branch v0.2.0-beta.1 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
+git clone --depth 1 --branch v0.2.0-beta.2 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
 node "$dduo_install_dir/bin/install.mjs" --headless --project-root "$PWD" --yes
 ```
 

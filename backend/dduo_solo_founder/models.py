@@ -149,7 +149,11 @@ class TeamInvitation(Base):
 
 
 class BrowserAuthCredential(Base):
-    """One-time browser ticket or revocable server-side browser session."""
+    """Browser ingress credential (ticket/link) or revocable browser session.
+
+    Ingress uses kind='ticket'; its full hashed token prefix distinguishes a
+    legacy one-time ticket from a reusable link without a schema migration.
+    """
 
     __tablename__ = "browser_auth_credentials"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

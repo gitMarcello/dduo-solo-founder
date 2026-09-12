@@ -619,6 +619,62 @@ test('Work opens first and a connection-required sleep state opens protected Set
   await expect(page).not.toHaveURL(/token=/);
 });
 
+test('a reusable chat Work link opens automatically in two independent browser contexts', async ({ browser }) => {
+  // Browser acceptance only: the API/cookie exchange is intentionally mocked.
+  // Real reusable-link authorization is covered by the backend ASGI tests.
+  const token = `dduo_link_${'a'.repeat(43)}`;
+  const originalLink = `/?project=project-browser&tab=tasks&work=task-browser&access_token=${token}`;
+  for (let visit = 0; visit < 2; visit += 1) {
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4174' });
+    try {
+      const page = await context.newPage();
+      await mockDashboardApi(page, { value: 0 });
+      let exchanges = 0;
+      let protectedBeforeExchange = 0;
+      await page.route('**/api/**', async (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        if (path === '/api/projects/project-browser/auth/browser-session') {
+          expect(request.method()).toBe('POST');
+          expect(request.postDataJSON()).toEqual({ ticket: token });
+          expect(new URL(page.url()).searchParams.has('access_token')).toBe(false);
+          exchanges += 1;
+          return route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            headers: { 'Set-Cookie': 'browser-test-session=authorized; Path=/; HttpOnly; SameSite=Lax' },
+            body: JSON.stringify({
+              authenticated: true,
+              csrf_token: 'browser-test-csrf',
+              current_member: { id: 'manager-browser', project_id: project.id },
+              capabilities: { manage_infrastructure: true, participate_in_project: true },
+            }),
+          });
+        }
+        if (exchanges === 0) protectedBeforeExchange += 1;
+        const headers = await request.allHeaders();
+        if (!headers.cookie?.includes('browser-test-session=authorized')) {
+          return fulfill(route, { detail: 'Browser access required' }, 401);
+        }
+        return route.fallback();
+      });
+      await page.goto(originalLink);
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Ship Android release' })).toBeVisible();
+      await expect(page).toHaveURL(/project=project-browser&tab=tasks&work=task-browser$/);
+      await expect(page.getByRole('button', { name: /confirm access|conferma accesso/i })).toHaveCount(0);
+      expect(exchanges).toBe(1);
+      expect(protectedBeforeExchange).toBe(0);
+      expect((await context.cookies()).find((cookie) => cookie.name === 'browser-test-session')?.httpOnly).toBe(true);
+      await page.reload();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      expect(exchanges).toBe(1);
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 test('exact Work links open the human item and preserve unrelated navigation state', async ({
   page,
 }) => {

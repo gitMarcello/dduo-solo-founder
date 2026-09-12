@@ -38,6 +38,7 @@ AUTH_EXEMPT_SUFFIXES = ("/auth/exchange", "/auth/browser-session")
 BOOTSTRAP_SUFFIX = "/team/bootstrap"
 AUTHORITY_SECRET_SUFFIXES = (
     BOOTSTRAP_SUFFIX,
+    "/authority/status",
     "/authority/initialize",
     "/authority/activate",
     "/authority/complete",
@@ -89,6 +90,10 @@ def invitation_code() -> str:
 
 def browser_secret() -> str:
     return f"dduo_web_{secrets.token_urlsafe(32)}"
+
+
+def browser_link_secret() -> str:
+    return f"dduo_link_{secrets.token_urlsafe(32)}"
 
 
 def browser_csrf_secret() -> str:
@@ -432,6 +437,7 @@ async def _browser_principal(
         or member.status != "active"
         or browser_session.project_id != token.project_id
         or token.project_id != member.project_id
+        or token.member_id != member.id
     ):
         return None
     return TeamPrincipal(
@@ -528,6 +534,7 @@ async def authenticate_team_request(
             path = request.url.path
             authority_control = path.endswith(
                 (
+                    "/authority/status",
                     "/authority/prepare",
                     "/authority/activate",
                     "/authority/complete",
@@ -541,7 +548,7 @@ async def authenticate_team_request(
                 or path.endswith("/backups")
                 or path.endswith("/backups/register-restore")
                 or path.endswith(
-                    ("/auth/browser-ticket", "/auth/browser-session", "/auth/logout")
+                    ("/auth/browser-ticket", "/auth/browser-link", "/auth/browser-session", "/auth/logout")
                 )
             )
             if not pending_control:

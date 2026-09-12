@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 import getpass
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -10,6 +12,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -63,6 +66,7 @@ from dduo_solo_founder.client_installation import (
     resolve_client_installation,
 )
 from dduo_solo_founder.client_http import ProjectHttpClient
+from dduo_solo_founder.dashboard_access import validate_browser_link, with_dashboard_access_token
 from dduo_solo_founder.invitations import (
     InvitationPayloadError,
     create_invitation_bundle,
@@ -896,6 +900,8 @@ def compose(
     project: dict,
     *args: str,
     capture_output: bool = False,
+    input_text: str | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run Compose with the isolated environment for one project."""
     if str(project.get("binding") or "local") != "local":
@@ -930,7 +936,9 @@ def compose(
         env=env,
         check=False,
         capture_output=capture_output,
-        text=capture_output,
+        text=capture_output or input_text is not None,
+        **({"input": input_text, "encoding": "utf-8"} if input_text is not None else {}),
+        **({"timeout": timeout} if timeout is not None else {}),
     )
 
 
@@ -1537,6 +1545,51 @@ def _restart_remote_stack(project_root: Path, project: dict) -> None:
     raise RuntimeError("remote project stack did not become healthy within 180 seconds")
 
 
+def _require_remote_bridge_connectivity(project_root: Path, project: dict) -> None:
+    """Check the actual API/worker network path, without invoking the sleep model."""
+    hints = {
+        "configuration": "Repair this project's container bridge configuration.",
+        "unreachable": (
+            "Check the host agent and container-to-host routing/firewall. Allow only "
+            "this project's current Docker network to the host agent's TCP port; "
+            "do not expose that port to the Internet."
+        ),
+        "unauthorized": "Repair the project-scoped bridge credential; do not relax authentication.",
+        "protocol_mismatch": "Align the host agent and project container runtime versions.",
+        "invalid_response": "Verify that the configured endpoint is the expected dDuo host agent.",
+        "probe_failed": "Check that this project's container is running the updated dDuo runtime.",
+    }
+    for service in ("api", "worker"):
+        reason = "probe_failed"
+        try:
+            result = compose(
+                {**project, "root_path": str(project_root)},
+                "exec", "-T", service, "python", "-m",
+                "dduo_solo_founder.bridge_probe", str(project["id"]),
+                capture_output=True, timeout=12,
+            )
+            # Container output is untrusted diagnostics: never echo credentials,
+            # arbitrary stdout/stderr, or a subprocess traceback to the user.
+            raw = result.stdout
+            if isinstance(raw, str) and len(raw) <= 8192:
+                status = json.loads(raw)
+                if isinstance(status, dict):
+                    if (result.returncode == 0 and status.get("ready") is True
+                            and status.get("reason") == "ready"):
+                        continue
+                    candidate = status.get("reason")
+                    if isinstance(candidate, str) and candidate in hints:
+                        reason = candidate
+        except (subprocess.TimeoutExpired, OSError, ValueError, TypeError):
+            pass
+        raise RuntimeError(
+            f"Host agent check failed from the {service} container ({reason}). "
+            f"{hints[reason]} Fix the reported issue, then rerun remote-host. "
+            "This check does not cancel the transfer or change authority; "
+            "keep a pending transfer frozen/read-only while repairing it."
+        ) from None
+
+
 def _require_remote_sleep_auth(project_id: str) -> str:
     """Fail before promotion unless this VPS owns one supported subscription.
 
@@ -1611,7 +1664,9 @@ def _validate_final_transfer_backup(
 ) -> dict:
     if not isinstance(backup, dict):
         raise RuntimeError("final transfer backup returned an invalid response")
-    manifest = backup.get("manifest_json")
+    # The backup API serializes SQL column names: ``manifest_json`` is only
+    # the ORM attribute, while the public response contract is ``manifest``.
+    manifest = backup.get("manifest")
     credentials = manifest.get("credentials") if isinstance(manifest, dict) else None
     dduo_secrets = (
         credentials.get("dduo_secrets") if isinstance(credentials, dict) else None
@@ -1744,14 +1799,27 @@ def _claim_remote_authority(
     finalization_receipt: str | None = None,
 ) -> dict:
     """Initialize a new node or activate a database restored from transfer-pending state."""
-    context = _project_context(project_root, project)
-    status = _api_request(
-        context,
-        "GET",
-        f"/projects/{project['id']}/authority",
+    runtime = load_project_secrets(project["id"], include_legacy=False)
+    authority_secret = runtime.get("DDUO_NODE_AUTHORITY_SECRET", "")
+    if not authority_secret:
+        raise RuntimeError("node authority credential is unavailable")
+    node_id = remote_node_id()
+    client = _launcher_client(_runtime_binding(project_root, project))
+    headers = {
+        **_host_control_headers(project),
+        "X-DDUO-Authority": authority_secret,
+    }
+    # A restored local project has no remote team token yet. Inspect this exact
+    # node via the restricted control plane, without bootstrapping a writer.
+    response = client.request(
+        "POST",
+        f"/projects/{project['id']}/authority/status",
+        headers=headers,
+        json={"node_id": node_id},
         timeout=30,
     )
-    node_id = remote_node_id()
+    response.raise_for_status()
+    status = response.json()
     if status["state"] == "active" and status.get("node_id") == node_id:
         (project_root / DISASTER_RECOVERY_FILE).unlink(missing_ok=True)
         return status
@@ -1777,18 +1845,10 @@ def _claim_remote_authority(
         if status["state"] == "transfer_pending"
         else "initialize"
     )
-    runtime = load_project_secrets(project["id"], include_legacy=False)
-    authority_secret = runtime.get("DDUO_NODE_AUTHORITY_SECRET", "")
-    if not authority_secret:
-        raise RuntimeError("node authority credential is unavailable")
-    binding = _runtime_binding(project_root, project)
-    response = _launcher_client(binding).request(
+    response = client.request(
         "POST",
         f"/projects/{project['id']}/authority/{operation}",
-        headers={
-            **_host_control_headers(project),
-            "X-DDUO-Authority": authority_secret,
-        },
+        headers=headers,
         json={
             "node_id": node_id,
             "expected_generation": int(status["generation"]),
@@ -1806,6 +1866,149 @@ def _claim_remote_authority(
     if result.get("state") == "active" and result.get("writable") is True:
         (project_root / DISASTER_RECOVERY_FILE).unlink(missing_ok=True)
     return result
+
+
+def _retryable_destination_https_failure(error: Exception) -> bool:
+    """Retry gateway startup failures, never TLS validation or transfer errors."""
+    pending: list[BaseException] = [error]
+    inspected: set[int] = set()
+    startup_tls_alert = False
+    other_tls_error = False
+    while pending:
+        cause = pending.pop()
+        if id(cause) in inspected:
+            continue
+        inspected.add(id(cause))
+        # HTTPX normally preserves the SSL cause; retain the safe decision if
+        # a transport only retained its standard OpenSSL diagnostic string.
+        detail = str(cause).upper()
+        if isinstance(cause, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in detail:
+            return False
+        if isinstance(cause, ssl.SSLError) or "[SSL:" in detail:
+            # Caddy may have no certificate yet during its first ACME issue.
+            # This particular alert can be transient; the next connection
+            # still has to pass ordinary TLS verification. Other TLS errors
+            # are terminal, and a later certificate cause overrides the alert.
+            if (
+                getattr(cause, "reason", None) == "TLSV1_ALERT_INTERNAL_ERROR"
+                or "TLSV1_ALERT_INTERNAL_ERROR" in detail
+            ):
+                startup_tls_alert = True
+            else:
+                other_tls_error = True
+        pending.extend(
+            linked for linked in (cause.__cause__, cause.__context__) if linked is not None
+        )
+    if other_tls_error:
+        return False
+    if startup_tls_alert:
+        return isinstance(error, httpx.ConnectError)
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code in {502, 503, 504}
+    return isinstance(error, (httpx.NetworkError, httpx.TimeoutException))
+
+
+def _verify_destination_https(
+    api_url: str,
+    project_id: str,
+    authority: dict,
+    activation_receipt: str,
+    authority_secret: str,
+    *,
+    wait_seconds: float = 0,
+) -> str:
+    """Prove the public TLS route reaches this exact read-only transfer target.
+
+    The receipt alone proves no network reachability. Re-issue it through the
+    idempotent activation endpoint, verifying TLS and every transfer claim.
+    Never follow redirects carrying the node credential to a different origin.
+    Startup callers may wait briefly; retirement keeps its single-attempt default.
+    """
+    if not 0 <= wait_seconds <= 60:
+        raise ValueError("destination HTTPS wait must be between 0 and 60 seconds")
+    canonical_api = canonical_https_url(api_url, field="destination_api_url")
+    if not isinstance(activation_receipt, str):
+        raise RuntimeError("destination readiness proof is malformed")
+    try:
+        proof = verify_authority_receipt(
+            activation_receipt, authority_secret, expected_kind="destination_ready"
+        )
+    except AuthorityReceiptError as exc:
+        raise RuntimeError("destination readiness proof is unauthenticated") from exc
+    if (
+        proof.project_id != project_id
+        or authority.get("project_id") != project_id
+        # Finalize may have committed while its response/marker was lost. The
+        # source stays retired; re-check the destination before replaying the
+        # idempotent finalization. It must still be read-only below.
+        or authority.get("state") not in {"transfer_pending", "transferred"}
+        or authority.get("writable") is not False
+        or authority.get("node_id") != proof.source_node_id
+        or authority.get("target_node_id") != proof.target_node_id
+        or type(authority.get("generation")) is not int
+        or authority["generation"] != proof.source_generation
+    ):
+        raise RuntimeError("destination readiness proof does not match this transfer")
+    deadline = time.monotonic() + wait_seconds if wait_seconds else None
+    last_error: Exception | None = None
+    while True:
+        remaining = deadline - time.monotonic() if deadline is not None else None
+        if remaining is not None and remaining <= 0:
+            break
+        timeout = (
+            httpx.Timeout(30, connect=10)
+            if remaining is None
+            else httpx.Timeout(min(30, remaining / 4), connect=min(10, remaining / 4))
+        )
+        try:
+            response = httpx.post(
+                f"{canonical_api}/projects/{project_id}/authority/activate",
+                headers={"X-DDUO-Authority": authority_secret},
+                json={
+                    "node_id": proof.target_node_id,
+                    "expected_generation": proof.source_generation,
+                },
+                verify=True,
+                trust_env=False,
+                follow_redirects=False,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or not isinstance(result.get("activation_receipt"), str):
+                raise ValueError("invalid authority response")
+            echoed = verify_authority_receipt(
+                result.get("activation_receipt", ""),
+                authority_secret,
+                expected_kind="destination_ready",
+            )
+            if (
+                echoed != proof
+                or result.get("project_id") != project_id
+                or result.get("node_id") != proof.source_node_id
+                or result.get("target_node_id") != proof.target_node_id
+                or type(result.get("generation")) is not int
+                or result["generation"] != proof.source_generation
+                or result.get("state") != "transfer_pending"
+                or result.get("phase") != "destination_ready"
+                or result.get("writable") is not False
+            ):
+                raise ValueError("HTTPS endpoint does not match the read-only transfer target")
+            return canonical_api
+        except (httpx.HTTPError, ValueError, AuthorityReceiptError, ssl.SSLError) as exc:
+            last_error = exc
+            if deadline is None or not _retryable_destination_https_failure(exc):
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(2, remaining))
+    raise RuntimeError(
+        "destination HTTPS verification failed; source retirement is fenced. "
+        "Check the public API URL, certificate, firewall and restored node, then retry. "
+        "Before finalization, keep the source frozen and the destination read-only while repairing; "
+        "cancellation is optional if you abandon the transfer."
+    ) from last_error
 
 
 @app.command("remote-host")
@@ -1855,6 +2058,7 @@ def remote_host(
 
     project = set_local_deployment_mode(project_root, "remote")
     _restart_remote_stack(project_root, project)
+    _require_remote_bridge_connectivity(project_root, project)
     authority = _claim_remote_authority(
         project_root,
         project,
@@ -1898,6 +2102,7 @@ def remote_host(
         "dashboard_url": gateway["dashboard_url"],
         "https_port": gateway["https_port"],
         "manager_bootstrapped": bootstrapped,
+        "container_bridge_verified": True,
         "authority": authority,
         "semantic_indexes": index_recovery,
         "firewall_ports": firewall_ports,
@@ -1907,9 +2112,19 @@ def remote_host(
         ),
     }
     if authority.get("phase") == "destination_ready":
+        _verify_destination_https(
+            gateway["api_url"], project["id"], authority,
+            authority["activation_receipt"],
+            load_project_secrets(project["id"], include_legacy=False).get(
+                "DDUO_NODE_AUTHORITY_SECRET", ""
+            ),
+            wait_seconds=60,
+        )
+        payload["https_verified"] = True
         payload["activation_receipt"] = authority.get("activation_receipt")
         payload["next"] = (
-            "on the old source run remote-transfer-retire with this activation receipt; "
+            "on the old source run remote-transfer-retire with this activation receipt "
+            f"and --destination-api-url {gateway['api_url']} (HTTPS is checked again there); "
             "then rerun remote-host here with the returned finalization receipt"
         )
     typer.echo(json.dumps(payload, indent=2))
@@ -2069,6 +2284,10 @@ def remote_transfer_retire(
         "--activation-receipt",
         help="Signed destination-readiness proof returned by remote-host on the new node.",
     ),
+    destination_api_url: str | None = typer.Option(
+        None, "--destination-api-url",
+        help="Public HTTPS API URL of the restored destination; checked before finalization.",
+    ),
     yes: bool = typer.Option(False, "--yes"),
 ) -> None:
     """Verify destination readiness, retire the source, and return its completion proof."""
@@ -2116,11 +2335,19 @@ def remote_transfer_retire(
             raise typer.BadParameter(
                 "--activation-receipt is required before the old authority can be retired"
             )
+        if not destination_api_url:
+            raise typer.BadParameter(
+                "--destination-api-url is required to verify HTTPS before source retirement"
+            )
         authority = _api_request(
             _project_context(project_root, project),
             "GET",
             f"/projects/{project['id']}/authority",
             timeout=30,
+        )
+        _verify_destination_https(
+            destination_api_url, project["id"], authority,
+            activation_receipt, authority_secret,
         )
         finalized = _api_request(
             _project_context(project_root, project),
@@ -2792,7 +3019,7 @@ def open_dashboard_command(
     project_root: Path = typer.Option(Path.cwd(), "--project-root"),
     tab: str = typer.Option("tasks", "--tab"),
 ) -> None:
-    """Open a local dashboard or exchange a remote bearer for a one-time browser ticket."""
+    """Open the dashboard with reusable seven-day access for a remote project."""
     project_root = find_workspace_root(project_root)
     project = load_project(project_root)
     binding = _runtime_binding(project_root, project)
@@ -2802,12 +3029,14 @@ def open_dashboard_command(
         response = _api_request(
             _project_context(project_root, project),
             "POST",
-            f"/projects/{project['id']}/auth/browser-ticket",
+            f"/projects/{project['id']}/auth/browser-link",
             timeout=30,
         )
         base = binding.dashboard_link(tab)
-        separator = "&" if "?" in str(base) else "?"
-        url = f"{base}{separator}{urlencode({'ticket': response['ticket']})}"
+        if base is None:
+            raise RuntimeError("the dashboard address is not configured for this project")
+        token, _expires_at = validate_browser_link(response)
+        url = with_dashboard_access_token(base, token)
     elif str(project.get("deployment") or "local") == "remote":
         gateway = _gateway_project(project["id"])
         if gateway is None:
@@ -2815,15 +3044,16 @@ def open_dashboard_command(
         response = _api_request(
             _project_context(project_root, project),
             "POST",
-            f"/projects/{project['id']}/auth/browser-ticket",
+            f"/projects/{project['id']}/auth/browser-link",
             timeout=30,
         )
-        query = urlencode({"project": project["id"], "tab": tab, "ticket": response["ticket"]})
-        url = f"{gateway['dashboard_url']}/?{query}"
+        query = urlencode({"project": project["id"], "tab": tab})
+        token, _expires_at = validate_browser_link(response)
+        url = with_dashboard_access_token(f"{gateway['dashboard_url']}/?{query}", token)
     else:
         url = project_dashboard_url(project, tab)
     webbrowser.open(url)
-    typer.echo(json.dumps({"opened": True, "url": url.split("ticket=", 1)[0] + ("ticket=<one-time>" if "ticket=" in url else "")}))
+    typer.echo(json.dumps({"opened": True, "url": url.split("access_token=", 1)[0] + ("access_token=<private-seven-day-link>" if "access_token=" in url else "")}))
 
 
 def _project_context(project_root: Path, project: dict) -> dict:
@@ -3071,8 +3301,13 @@ def _restore_drill(extracted: Path, expected_project_id: str) -> dict[str, int]:
     try:
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
+            # The official image uses a socket-only temporary server during
+            # initdb. Wait for the final TCP server before attempting restore.
             ready = subprocess.run(
-                ["docker", "exec", container, "pg_isready", "-U", "dduo"],
+                [
+                    "docker", "exec", container, "pg_isready",
+                    "-h", "127.0.0.1", "-U", "dduo", "-d", "dduo_restore_drill",
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -3198,6 +3433,9 @@ def _wait_for_postgres(project: dict) -> None:
             "-T",
             "postgres",
             "pg_isready",
+            # Ignore the socket-only initialization server in the official image.
+            "-h",
+            "127.0.0.1",
             "-U",
             "dduo_solo_founder",
             "-d",
@@ -3209,8 +3447,13 @@ def _wait_for_postgres(project: dict) -> None:
     raise BackupError("restored PostgreSQL service did not become ready")
 
 
-def _checked_compose(project: dict, *args: str) -> None:
-    result = compose(project, *args)
+def _checked_compose(project: dict, *args: str, input_text: str | None = None) -> None:
+    if input_text is None:
+        result = compose(project, *args)
+    else:
+        # PostgreSQL diagnostics can echo imported data. Keep them private and
+        # report only the static command and exit code if this import fails.
+        result = compose(project, *args, input_text=input_text, capture_output=True)
     if result.returncode:
         raise BackupError(
             f"docker compose {' '.join(args)} failed with exit code {result.returncode}"
@@ -3683,15 +3926,23 @@ def _restore_portable_backup_history(extracted: Path, project: dict) -> int:
     rows = _portable_backup_history_rows(extracted, str(project["id"]))
     if not rows:
         return 0
-    normalized = extracted / "backup-records.restore.json"
-    normalized.write_text(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
-    normalized.chmod(0o600)
-    _checked_compose(
-        project, "cp", str(normalized), "postgres:/tmp/dduo-backup-history.json"
+    # COPY consumes data from the client connection, not a server-owned file.
+    # This avoids host/container UID assumptions and never exposes archive
+    # contents in command arguments. CSV quoting keeps JSON entirely as data.
+    stream = io.StringIO(newline="")
+    csv.writer(stream, lineterminator="\n").writerow(
+        [json.dumps(rows, ensure_ascii=False, separators=(",", ":"))]
     )
-    statement = """
+    # Keep COPY in its own command: psql 16.15 does not recognize COPY input
+    # after an earlier statement in the same command string. One psql session
+    # and --single-transaction retain atomicity across all three commands.
+    create_statement = (
+        "CREATE TEMP TABLE dduo_backup_history_import (payload jsonb) ON COMMIT DROP"
+    )
+    copy_statement = "COPY dduo_backup_history_import (payload) FROM STDIN WITH (FORMAT csv)"
+    insert_statement = """
 WITH rows AS (
-  SELECT jsonb_array_elements(pg_read_file('/tmp/dduo-backup-history.json')::jsonb) AS item
+  SELECT jsonb_array_elements(payload) AS item FROM pg_temp.dduo_backup_history_import
 )
 INSERT INTO backup_records (
   id, project_id, trigger, status, archive_name, size_bytes, includes_qdrant,
@@ -3721,8 +3972,16 @@ ON CONFLICT (id) DO NOTHING
         "-d",
         "dduo_solo_founder",
         "--no-psqlrc",
+        "--set",
+        "ON_ERROR_STOP=1",
+        "--single-transaction",
         "--command",
-        statement,
+        create_statement,
+        "--command",
+        copy_statement,
+        "--command",
+        insert_statement,
+        input_text=stream.getvalue(),
     )
     return len(rows)
 

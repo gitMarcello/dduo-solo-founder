@@ -103,7 +103,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: Object.keys(headers).length ? headers : undefined,
   });
   if (!response.ok) {
-    if (response.status === 401 && projectId) clearCsrfToken(projectId);
+    if (response.status === 401 && projectId && !path.endsWith('/auth/browser-session'))
+      clearCsrfToken(projectId);
     const payload = await response.json().catch(() => null);
     throw new ApiError(
       payload?.detail ?? `Request failed with status ${response.status}`,

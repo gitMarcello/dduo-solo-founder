@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { parseChecksumManifest } from "./checksum-manifest.mjs";
 import { commandInvocation } from "./native-command.mjs";
 import { copyPluginFiles as cpSync } from "./copy-plugin-files.mjs";
+import { writeVolumeSnapshot } from "./upgrade-snapshot.mjs";
 import {
   clientCommandInvocation,
   readClientRecord,
@@ -1857,31 +1858,13 @@ function dockerVolumeExists(name) {
 }
 
 function snapshotVolume(volume, output, archiveName) {
-  run("docker", [
-    "run",
-    "--rm",
-    "-v",
-    `${volume}:/source:ro`,
-    "-v",
-    `${output}:/snapshot`,
-    "postgres:16-alpine",
-    "sh",
-    "-c",
-    `tar -C /source -czf /snapshot/${archiveName} . && tar -tzf /snapshot/${archiveName} >/dev/null`,
-  ]);
-  const archive = join(output, archiveName);
-  if (!existsSync(archive) || readFileSync(archive).length === 0) {
-    throw new Error(`Upgrade snapshot for ${volume} could not be verified.`);
-  }
-  chmodSync(archive, 0o600);
-  return {
-    archive: archiveName,
-    sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"),
-  };
+  return writeVolumeSnapshot(volume, output, archiveName, run);
 }
 
 function stopRegisteredProject(rootPath) {
-  run("dduo-solo-founder", ["stop", "--project-root", rootPath], { optional: options.force });
+  // A failed stop can leave a database writing. --force must not turn that
+  // live volume into a supposedly consistent recovery snapshot.
+  run("dduo-solo-founder", ["stop", "--project-root", rootPath]);
 }
 
 function restartUpgradedProjects(projectRoots) {
@@ -1923,8 +1906,8 @@ function createUpgradeSnapshots() {
       // Raw PostgreSQL files are only copied after the stack has shut down.
       // That keeps this fallback snapshot consistent even before an encrypted
       // project backup has ever been configured.
-      stopRegisteredProject(rootPath);
       restartRoots.push(rootPath);
+      stopRegisteredProject(rootPath);
       const projectDestination = join(temporary, projectId);
       privateDirectory(projectDestination);
       if (existsSync(config)) {
@@ -1969,16 +1952,30 @@ function createUpgradeSnapshots() {
     step(`Verified local upgrade snapshot: ${destination}`);
     return restartRoots;
   } catch (error) {
-    rmSync(temporary, { recursive: true, force: true });
+    const recoveryErrors = [error];
+    let restartFailed = false;
+    let cleanupFailed = false;
     try {
       // The caller receives restartRoots only after every snapshot succeeds.
       // Recover here when a later project/archive fails so already-stopped
       // memories are never silently left offline.
       restartUpgradedProjects(restartRoots);
     } catch (restartError) {
-      throw new AggregateError(
-        [error, restartError],
-        "Upgrade snapshot failed and one or more stopped projects could not be restarted.",
+      restartFailed = true;
+      recoveryErrors.push(restartError);
+    }
+    try {
+      rmSync(temporary, { recursive: true, force: true });
+    } catch (cleanupError) {
+      cleanupFailed = true;
+      recoveryErrors.push(cleanupError);
+    }
+    if (recoveryErrors.length > 1) {
+      throw new AggregateError(recoveryErrors,
+        "Upgrade snapshot failed. "
+        + (restartFailed ? "One or more stopped projects could not be restarted. " : "Stopped projects were restarted. ")
+        + (cleanupFailed ? `Incomplete private snapshot retained at ${temporary}; cleanup failed. ` : "Temporary snapshot removed. ")
+        + `Cause: ${String(error?.message || error).split("\n", 1)[0]}`,
       );
     }
     throw error;

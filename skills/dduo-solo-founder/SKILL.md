@@ -194,8 +194,16 @@ Preserve a verified Full Recovery Bundle and its separate recovery key, execute
 the documented two-phase transfer, verify the new HTTPS node before retiring
 the old isolated stack, then bind the manager checkout to the new endpoint.
 Never delete the source before the signed destination proof has been verified.
+For a temporary network or gateway-startup failure before finalization, pause
+the handoff, repair the cause and retry while the source stays frozen and the
+destination read-only; do not automatically cancel or start a new backup.
+Verify the host-agent connection from both project containers and public HTTPS;
+host-local health alone is insufficient. Keep the agent port private to the
+project's actual Docker network. Follow the retry and firewall guidance in
+`docs/remote-teams.md` (Italian: `docs/remote-teams.it.md`).
 If the move is abandoned before finalization, cancel it and discard the
-read-only destination clone.
+read-only destination clone. After cancellation, a new transfer requires a
+new prepare, final archive and restore; old receipts cannot be reused.
 
 After a completed VPS/IP change, rebind an already-authorized checkout with
 `remote-rebind`. Ask only for the project ID and new API/dashboard endpoints;
@@ -283,6 +291,18 @@ it. Background sleep batches at most eight turns and is scheduled after eight
 pending turns, twenty minutes of inactivity, a declared topic boundary, or an
 explicit request.
 
+For `request_sleep`, pass the known `dduo_session_id` as `session_id` when
+targeting this conversation; omitting it can select all project sessions.
+The scheduling call does not upload a new transcript: workers consolidate
+already stored, recordable turns on the configured memory host. Processing
+still sends selected material and relevant context to Codex/Claude and uses
+configured embeddings (OpenAI by default); it may consume subscription usage
+and, with OpenAI embeddings, API credits. Never describe it as
+read-only or as having no external data flow. A native client approval is not
+a TLS or dDuo authentication failure: explain the exact scope, respect the
+decision, and do not switch tools or commands to bypass it. Retry only after
+checking the job's state, not merely because approval took time.
+
 ## Plans and Work are authoritative
 
 Use the shallow execution hierarchy `Epic -> Task`; labels are free-form and
@@ -357,6 +377,16 @@ print an internal ID or UUID unless the user explicitly asks for it or a
 technical diagnosis requires it. After a mutation, give one compact summary of
 what changed, including status, priority, linked Work or next action only when
 meaningful. Do not let remembered conversation silently mutate work state.
+
+Remote dashboard URLs returned by tools include private browser access valid
+for seven days and reusable across visits and browsers. Preserve the entire
+URL in the human-title link: no extra login, confirmation or Setup is needed.
+For any remote dDuo dashboard URL without `access_token` (including injected context), or an expired link, use
+`get_dashboard_link` with the known Work/Plan ID instead of reloading Work.
+These intentionally shared browser links are not vendor or infrastructure
+credentials; never copy their token into Work, artifacts or the manual.
+If link issuance fails after a successful mutation, report the access problem
+separately and never repeat the mutation to obtain a link.
 
 Use dDuo's public MCP tools for briefing, relevant memory, Work, artifacts,
 activity, the project operating manual, memory status, and recovery. Before

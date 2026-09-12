@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import subprocess
 import time
 from types import SimpleNamespace
 
@@ -8,6 +10,80 @@ import pytest
 
 from dduo_solo_founder import launcher
 from dduo_solo_founder.bridge_auth import BRIDGE_PROTOCOL_VERSION, project_bridge_token
+
+
+def test_remote_bridge_checks_both_running_containers_with_private_environment(monkeypatch, tmp_path):
+    calls = []
+
+    def compose(project, *args, **kwargs):
+        calls.append((project, args, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"ready":true,"reason":"ready"}')
+
+    monkeypatch.setattr(launcher, "compose", compose)
+    launcher._require_remote_bridge_connectivity(tmp_path, {"id": "project-a"})
+    assert [call[1][2] for call in calls] == ["api", "worker"]
+    for project, args, kwargs in calls:
+        assert project == {"id": "project-a", "root_path": str(tmp_path)}
+        assert args == (
+            "exec", "-T", args[2], "python", "-m", "dduo_solo_founder.bridge_probe", "project-a",
+        )
+        assert kwargs == {"capture_output": True, "timeout": 12}
+
+
+@pytest.mark.parametrize("service", ["api", "worker"])
+@pytest.mark.parametrize("reason", [
+    "configuration", "unreachable", "unauthorized", "protocol_mismatch", "invalid_response",
+])
+def test_remote_bridge_fails_closed_from_either_container(monkeypatch, tmp_path, service, reason):
+    calls = []
+
+    def compose(project, *args, **kwargs):
+        calls.append(args[2])
+        failed = args[2] == service
+        return SimpleNamespace(
+            returncode=int(failed), stderr="private-token-never-display",
+            stdout=json.dumps({"ready": not failed, "reason": reason if failed else "ready"}),
+        )
+
+    monkeypatch.setattr(launcher, "compose", compose)
+    with pytest.raises(RuntimeError, match=f"{service} container \\({reason}\\)") as failure:
+        launcher._require_remote_bridge_connectivity(tmp_path, {"id": "project-a"})
+    assert calls == (["api"] if service == "api" else ["api", "worker"])
+    assert "private-token" not in str(failure.value)
+    assert "does not cancel" in str(failure.value)
+    if reason == "unreachable":
+        assert "do not expose that port to the Internet" in str(failure.value)
+
+
+@pytest.mark.parametrize("output,code", [
+    ('{"ready":true,"reason":"ready"}', 1),
+    ('{"ready":"true","reason":"ready"}', 0),
+    ('{"ready":true,"reason":{"token":"private-token"}}', 0),
+    ('{"ready":false,"reason":"private-token"}', 1),
+    ('[]', 0), ('not-json-private-token', 1), ('x' * 8193, 0), (None, 1),
+])
+def test_remote_bridge_rejects_untrusted_probe_output(monkeypatch, tmp_path, output, code):
+    monkeypatch.setattr(launcher, "compose", lambda *args, **kwargs: SimpleNamespace(
+        returncode=code, stdout=output, stderr="private-token",
+    ))
+    with pytest.raises(RuntimeError, match="probe_failed") as failure:
+        launcher._require_remote_bridge_connectivity(tmp_path, {"id": "project-a"})
+    assert "private-token" not in str(failure.value)
+
+
+@pytest.mark.parametrize("error", [
+    subprocess.TimeoutExpired("private-command", 12, output="private-token"),
+    OSError("private-token"),
+])
+def test_remote_bridge_probe_timeout_and_process_error_are_safe(monkeypatch, tmp_path, error):
+    def compose(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(launcher, "compose", compose)
+    with pytest.raises(RuntimeError, match="probe_failed") as failure:
+        launcher._require_remote_bridge_connectivity(tmp_path, {"id": "project-a"})
+    assert "private-token" not in str(failure.value)
+    assert failure.value.__suppress_context__ is True
 
 
 def test_bridge_token_is_private_and_reused(monkeypatch, tmp_path):

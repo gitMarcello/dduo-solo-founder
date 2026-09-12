@@ -4,8 +4,9 @@
 
 Ogni progetto mantiene un volume PostgreSQL, uno Qdrant, API, worker e dashboard
 propri, sia in locale sia su VPS. Più progetti sullo stesso server non fondono
-stack, database, credenziali o memoria. È comune soltanto il gateway Caddy, che
-termina HTTPS e inoltra ogni porta pubblica alla dashboard loopback corretta.
+stack, database, credenziali o memoria. Sono comuni il gateway Caddy e l'agente
+host, che autentica separatamente ogni progetto. Caddy termina HTTPS e inoltra
+ogni porta pubblica alla dashboard loopback corretta.
 
 Il primo progetto usa normalmente HTTPS `443`; i successivi ricevono una porta
 stabile libera fra `24443` e `25442`. `remote-host` stampa le porte da aprire.
@@ -85,13 +86,25 @@ bootstrap contiene il token iniziale del gestore. Il comando:
 4. Crea i segreti remoti di autenticazione, sessione e autorità.
 5. Preserva lo stack isolato e ruota la password PostgreSQL prima che i servizi
    adottino il nuovo segreto.
-6. Attiva la modalità remota autenticata per API e worker.
+6. Attiva la modalità remota autenticata per API e worker e verifica da entrambi
+   i container il collegamento autenticato all'agente host, prima del claim.
 7. Assegna l'autorità alla VPS oppure produce una ricevuta di disponibilità in
    sola lettura per un trasferimento preparato.
 8. Crea il primo **Gestore dell'infrastruttura** solo quando l'autorità è
    scrivibile e il bootstrap è necessario.
 9. Registra il progetto in Caddy e stampa API, dashboard, porta HTTPS e regole
-   firewall: `443` permanente e l'eventuale porta aggiuntiva del progetto.
+   firewall: `443` permanente e l'eventuale porta aggiuntiva del progetto. Per
+   un trasferimento preparato verifica certificato TLS pubblico e percorso
+   HTTPS completo fino al progetto esatto in sola lettura, prima di riportare
+   `https_verified`. All'avvio ritenta per una finestra massima di 60 secondi
+   gli errori temporanei di connessione/gateway; certificati non validi,
+   autorizzazioni errate e identità non corrispondenti restano bloccanti.
+
+Il primo gestore non deve già esistere nel progetto locale ripristinato. Il suo
+host legge `POST /projects/{id}/authority/status` con il segreto d'autorità
+isolato del progetto prima dell'attivazione. Questo controllo circoscritto non
+registra membri, non concede accesso alle normali API e non rende scrivibile la
+destinazione: il bootstrap del gestore attende comunque il completamento.
 
 L'account VPS deve poter eseguire servizi utente persistenti. Se viene richiesto
 linger, l'agente autorizzato esegue l'operazione amministrativa indicata, per
@@ -101,6 +114,21 @@ prerequisito non c'è promozione. Token bridge e porta dinamica sono solo nel
 file ambiente `0600`, non nella unit o negli argomenti del processo.
 `bridge-stop` ferma la unit senza disabilitarne l'avvio automatico; il prossimo
 avvio dDuo la riattiva.
+
+Il firewall deve consentire il traffico **dalla rete Docker effettiva del
+progetto alla porta TCP dell'agente host**, non da Internet. La porta corrente
+è nel file privato `~/.config/dduo-solo-founder/bridge/port`; non stampare
+`agent.env`, che contiene anche il token. Un gestore autorizzato verifica rete,
+interfaccia e porta prima di aggiungere una regola limitata e persistente,
+senza disabilitare il firewall o rimuovere regole di altri progetti. Ricontrollare
+la rete dopo un restore che la ricrea e la persistenza dopo il riavvio VPS.
+Il plugin non modifica automaticamente il firewall.
+
+Il controllo dai container legge soltanto lo stato autenticato del bridge:
+non esegue il sonno e non modifica dati. `container_bridge_verified: true`
+conferma quel collegamento, non un consolidamento riuscito. Se fallisce,
+`remote-host` indica container e categoria (rete, credenziali, configurazione
+o protocollo) e non procede al claim. Riparare la causa e ripetere il comando.
 
 Il primo token gestore viene stampato una volta. Un record privato pendente
 viene salvato prima della modifica server e rimosso dopo la stampa: crash o
@@ -169,19 +197,31 @@ promosso solo se l'ID coincide; un altro progetto o endpoint remoto non viene
 sostituito. Ripetere l'invito è accettato solo con lo stesso token registrato;
 un altro dispositivo riceve conflitto. L'accesso memoria non concede Git.
 
-Aprire la dashboard tramite la CLI:
+Apri dashboard, Task e Piani direttamente dai link restituiti da dDuo in chat.
+Ogni link remoto contiene un token browser privato valido **sette giorni**,
+riutilizzabile in visite e browser diversi, senza altri login o conferme.
+Chiunque lo possieda può accedere a quel progetto con i permessi del membro
+che lo ha generato: non pubblicarlo. Il bearer permanente del dispositivo non
+compare nel link. L'agente può anche aprirlo tramite la CLI:
 
 ```bash
 dduo-solo-founder dashboard --tab tasks --project-root .
 ```
 
-Il bearer viene scambiato con un ticket monouso valido cinque minuti, poi con
-un cookie di sessione progetto `HttpOnly`, `Secure`, `SameSite=Strict` valido
-sette giorni. Revocare un membro revoca dispositivi e sessioni browser. Ogni
+La dashboard scambia automaticamente il token con un cookie di sessione del
+progetto `HttpOnly`, `Secure`, `SameSite=Strict`, poi toglie il token dalla barra
+degli indirizzi. Il link originale in chat resta riutilizzabile fino alla
+scadenza; il cookie non dura oltre. Revocare il membro o il dispositivo
+invalida i suoi link e accessi browser. Alla scadenza chiedi a dDuo un nuovo
+link tramite `get_dashboard_link`, senza riconfigurare il progetto. I vecchi
+ticket monouso rimangono compatibili per i client precedenti. Ogni
 modifica richiede anche il valore CSRF di quella sessione in `X-DDUO-CSRF`,
 conservato solo nello storage browser dell'origine e rimosso a logout o errore
 di autenticazione. Questo separa dashboard su porte diverse dello stesso host,
 dato che i cookie non sono isolati per porta.
+Il logout chiude la sessione browser, non il link riutilizzabile. Il link rimane
+nella chat in cui è stato condiviso; cronologie e log di proxy esterni non sono
+archivi garantiti privi di credenziali.
 
 L'agente esegue i comandi dell'invito; il collaboratore non opera nel terminale.
 Il manuale autenticato viene precaricato; un errore cache è un avviso e viene
@@ -252,21 +292,44 @@ Un progetto locale o remoto esistente si sposta tramite full recovery:
 2. Ripristinare esattamente quell'archivio sulla destinazione con la recovery
    key separata, poi eseguire `remote-host`. Il database resta in sola lettura
    e il comando restituisce `activation_receipt`, firmata e legata a progetto,
-   generazione sorgente, nodo destinatario e nonce monouso.
-3. Verificare `destination_ready` e l'endpoint HTTPS health pubblico. Un team
-   già remoto può usare le credenziali ripristinate per leggere la dashboard;
+   generazione sorgente, nodo destinatario e nonce monouso, soltanto dopo il
+   superamento della verifica HTTPS pubblica.
+3. Verificare che `remote-host` riporti `destination_ready` e
+   `https_verified: true`. Il solo avvio di Docker/Caddy o una ricevuta firmata
+   non dimostrano che HTTPS pubblico funzioni. Il controllo automatico valida
+   il certificato per l'host/IP configurato e raggiunge l'API attraverso il
+   gateway pubblico, verificando progetto, generazione sorgente, nodo
+   destinatario e ricevuta firmata, con destinazione ancora in sola lettura.
+   La verifica TLS non viene mai disabilitata e i redirect non vengono seguiti.
+   Un team già remoto può usare le credenziali ripristinate per leggere la dashboard;
    il primo gestore di un progetto locale nasce solo dopo il completamento.
+   Se HTTPS fallisce, correggere certificato, firewall o routing e riprovare:
+   la sorgente non è ritirata e la destinazione ripristinata resta in sola lettura.
+   Un errore temporaneo non impone un nuovo backup né l'annullamento: mantenere
+   sorgente congelata e clone in sola lettura, quindi ripetere `remote-host`.
+   Non proseguire senza una verifica positiva e non aggirare errori d'identità.
    Per rinunciare ora, eliminare il clone in sola lettura e sulla sorgente usare
    `dduo-solo-founder remote-transfer-cancel --new-node-not-activated`.
    La sorgente torna scrivibile e la ricevuta precedente non è più valida.
+   Dopo un annullamento servono nuovo prepare, nuovo backup finale e nuovo
+   restore; non riutilizzare l'archivio o le ricevute del freeze annullato.
 4. Per confermare lo spostamento eseguire sulla vecchia sorgente:
 
    ```bash
    dduo-solo-founder remote-transfer-retire \
-     --activation-receipt '<RICEVUTA-ATTIVAZIONE>' --yes
+     --activation-receipt '<RICEVUTA-ATTIVAZIONE>' \
+     --destination-api-url '<URL-API-HTTPS>' \
+     --yes
    ```
 
-   La sorgente verifica la ricevuta, diventa irrevocabilmente `transferred`,
+   Usare l'URL API esatto stampato da `remote-host`. `--destination-api-url` è
+   obbligatorio per il primo ritiro: la sorgente ripete autonomamente i
+   controlli di certificato, percorso HTTPS e identità del trasferimento subito
+   prima della finalizzazione. Un errore impedisce ritiro e pulizia dei volumi;
+   prima della finalizzazione è ancora possibile annullare. Un marker locale
+   di ritiro verificato consente di riprovare la sola pulizia senza ripetere il
+   trasferimento già finalizzato.
+   Superate le verifiche, la sorgente diventa irrevocabilmente `transferred`,
    salva durevolmente `finalization_receipt`, poi elimina soltanto i propri
    vecchi volumi e la route gateway. La pulizia si può ripetere senza database.
 5. Sulla destinazione ripetere `remote-host` con

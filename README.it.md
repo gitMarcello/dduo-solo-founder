@@ -25,7 +25,7 @@ Apri **il progetto su cui vuoi lavorare** in Codex o Claude Code e incolla:
 
 ```text
 Installa questo plugin nel progetto e guidami nella configurazione:
-https://github.com/gitMarcello/dduo-solo-founder/tree/v0.2.0-beta.1
+https://github.com/gitMarcello/dduo-solo-founder/tree/v0.2.0-beta.2
 ```
 
 L'assistente segue le
@@ -39,7 +39,7 @@ Eseguilo dalla root del tuo progetto. Servono Node.js 18+ e Git:
 
 ```bash
 dduo_install_dir="$(mktemp -d)"
-git clone --depth 1 --branch v0.2.0-beta.1 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
+git clone --depth 1 --branch v0.2.0-beta.2 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
 "$dduo_install_dir/install.sh" --only codex --project-root "$PWD" --yes
 # Usa invece --only claude per installare Claude Code.
 ```
@@ -48,7 +48,7 @@ Su Windows nativo, usa PowerShell:
 
 ```powershell
 $dduoInstallDir = Join-Path ([IO.Path]::GetTempPath()) ("dduo-" + [guid]::NewGuid())
-git clone --depth 1 --branch v0.2.0-beta.1 https://github.com/gitMarcello/dduo-solo-founder.git $dduoInstallDir
+git clone --depth 1 --branch v0.2.0-beta.2 https://github.com/gitMarcello/dduo-solo-founder.git $dduoInstallDir
 node (Join-Path $dduoInstallDir 'bin/install.mjs') --only codex --project-root (Get-Location).Path --yes
 ```
 
@@ -66,7 +66,7 @@ segue la [procedura VPS senza browser](docs/platform-support.it.md).
 Crea la prima memoria dDuo di questo progetto direttamente su VPS e collega
 questo computer da remoto. Preserva eventuali memorie esistenti, verifica i
 requisiti del server e segui questa procedura. Chiedimi solo dati e decisioni mancanti:
-https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.1/docs/platform-support.it.md
+https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.2/docs/platform-support.it.md
 ```
 
 ### Sposta un progetto dDuo esistente su una VPS
@@ -80,8 +80,8 @@ Prima di trattare credenziali infrastrutturali, attiva e verifica la modalità o
 Verifica un backup di recupero, tieni private le credenziali e mantieni
 una sola memoria scrivibile. Segui le procedure di trasferimento e recupero
 della release; chiedimi solo dati mancanti e decisioni necessarie:
-https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.1/docs/remote-teams.it.md
-https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.1/docs/backup-and-recovery.it.md
+https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.2/docs/remote-teams.it.md
+https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.2/docs/backup-and-recovery.it.md
 ```
 
 ### Entra in un progetto già condiviso
@@ -144,7 +144,7 @@ mantiene uno stack completo e richiede quindi RAM e spazio ulteriori.
 
 ## Stato del progetto
 
-[v0.2.0-beta.1](https://github.com/gitMarcello/dduo-solo-founder/releases/tag/v0.2.0-beta.1)
+[v0.2.0-beta.2](https://github.com/gitMarcello/dduo-solo-founder/releases/tag/v0.2.0-beta.2)
 è una Beta per sviluppatori invitati. Usa il formato Agent Plugins 1.0 con
 adapter CLI nativi per Codex e Claude Code su macOS e Windows, o un host Linux
 per la memoria. Le integrazioni ufficiali VS Code usano lo stesso adapter, ma

@@ -41,6 +41,9 @@ jobs:
         run: ruff check backend tests benchmarks scripts migrations
       - name: Test checksum manifest and native command contracts
         run: node --test tests/checksum-manifest.test.mjs tests/native-command.test.mjs tests/copy-plugin-files.test.mjs
+      - name: Test private upgrade snapshot streams and failure handling
+        if: matrix.distribution
+        run: node --test tests/upgrade-snapshot.test.mjs
       - name: Test with installer simulation
         if: matrix.distribution
         run: pytest -q -m "not onboarding"
@@ -55,11 +58,24 @@ jobs:
         run: >-
           pytest -q --no-cov
           tests/test_authority_receipts.py
+          tests/test_transfer_backup_contract.py
+          tests/test_transfer_auth_bootstrap.py
+          tests/test_transfer_bind.py
+          tests/test_transfer_https.py
           tests/test_backup_config.py
+          tests/test_backup_history_restore.py
           tests/test_bridge_auth.py
+          tests/test_bridge_probe.py
+          tests/test_launcher_bridge.py::test_remote_bridge_checks_both_running_containers_with_private_environment
+          tests/test_launcher_bridge.py::test_remote_bridge_fails_closed_from_either_container
+          tests/test_launcher_bridge.py::test_remote_bridge_rejects_untrusted_probe_output
+          tests/test_launcher_bridge.py::test_remote_bridge_probe_timeout_and_process_error_are_safe
+          tests/test_cli_bridge.py::test_real_bridge_health_accepts_only_exact_project_token_and_preserves_master
           tests/test_client_binding.py
           tests/test_client_installation.py
           tests/test_client_http.py
+          tests/test_dashboard_access.py
+          tests/test_link_privacy.py
           tests/test_client_readiness.py
           tests/test_memory_connection.py
           tests/test_connection_health.py
@@ -81,6 +97,10 @@ jobs:
           tests/test_mcp_server.py
           tests/test_memory_api.py::test_capture_status_is_exact_and_never_returns_turn_content
           tests/test_team_api.py::test_member_cannot_attach_events_or_context_to_another_members_turn
+          tests/test_team_api.py::test_browser_link_is_reusable_for_seven_days_across_browsers
+          tests/test_team_api.py::test_browser_links_require_real_project_bearer_not_cookies_or_local_owner
+          tests/test_team_api.py::test_browser_ingress_prefix_is_hash_bound_and_session_tokens_cannot_exchange
+          tests/test_team_api.py::test_reusable_browser_links_respect_revocation_and_consumption
           tests/test_runtime.py
           tests/test_runtime_settings.py
           tests/test_headless_setup.py
@@ -97,6 +117,11 @@ jobs:
           tests/test_launcher.py::test_login_codex_imports_only_the_explicitly_selected_profile
           tests/test_launcher.py::test_full_recovery_supplement_restores_only_project_scoped_state
           tests/test_launcher.py::test_full_recovery_supplement_validates_everything_before_writing
+          tests/test_launcher.py::test_backup_restore_drill_uses_disposable_database
+          tests/test_launcher.py::test_backup_restore_drill_readiness_timeout_cleans_up_without_restore
+          tests/test_launcher.py::test_postgres_wait_and_checked_compose
+          tests/test_launcher.py::test_remote_host_orchestrates_isolated_stack_and_gateway
+          tests/test_launcher.py::test_remote_host_defers_manager_bootstrap_while_destination_is_read_only
       - name: Cross-platform installer dry run
         run: node bin/install.mjs --dry-run --yes
       - name: Native locked installer, update, rollback, MCP and hooks
@@ -148,14 +173,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install production restore CLI for the two-host smoke
+        run: python -m pip install .
       - name: Validate Compose
         run: docker compose config >/dev/null
       - name: Build production images
         run: docker compose build api worker web
-      - name: Exercise two-stack authority handoff
+      - name: Verify non-root upgrade snapshots with rootful Docker
+        run: |
+          docker pull node:22-alpine
+          docker pull postgres:16-alpine
+          python3 scripts/e2e_upgrade_snapshot.py
+      - name: Exercise encrypted CLI restore and authority handoff on PostgreSQL 16.15
         run: |
           docker build -t dduo-authority-smoke-api -f docker/api.Dockerfile .
-          python3 scripts/e2e_authority_transfer.py
+          python3 scripts/e2e_authority_transfer.py \
+            --postgres-image postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 \
+            --postgres-platform linux/amd64 --postgres-version 16.15
+      - name: Preserve encrypted CLI restore compatibility with PostgreSQL 16.14
+        run: |
+          python3 scripts/e2e_authority_transfer.py \
+            --postgres-image postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 \
+            --postgres-platform linux/amd64 --postgres-version 16.14
       - name: Smoke test migrations and health
         run: |
           mkdir -p .ci-backups .ci-project

@@ -3,8 +3,9 @@
 # Remote projects and teams
 
 Each local or remote project keeps its own PostgreSQL, Qdrant, API, worker,
-dashboard and credentials. A VPS may host multiple isolated stacks; only Caddy
-is shared, terminating HTTPS and routing to each project's loopback dashboard.
+dashboard and credentials. A VPS may host multiple isolated stacks. Caddy and
+the host agent are shared; the agent authenticates each project separately.
+Caddy terminates HTTPS and routes to each project's loopback dashboard.
 
 The first project registered on a VPS normally receives HTTPS port `443`.
 Further projects receive a stable free port in the range `24443`-`25442`.
@@ -92,14 +93,25 @@ dduo-solo-founder remote-host \
 4. creates the remote authentication, session and node-authority secrets;
 5. preserves the project's existing isolated stack and rotates its internal
    PostgreSQL password before remote services adopt the new secret;
-6. enables authenticated remote mode for API and worker;
+6. enables authenticated remote mode for API and worker, then checks the
+   authenticated host-agent connection from both containers before claiming authority;
 7. claims this VPS as the authoritative memory node, or emits a read-only
    readiness receipt when completing a prepared transfer;
 8. bootstraps the first **Gestore dell'infrastruttura** when necessary and only
    after the authority is writable;
 9. registers the project with the shared Caddy gateway and prints its HTTPS
    API, dashboard, assigned port and firewall instruction for permanent `443`
-   access plus the assigned project port when different.
+   access plus the assigned project port when different. For a prepared
+   transfer, it verifies the public TLS certificate and the complete HTTPS
+   route to that exact read-only project before reporting `https_verified`.
+   Startup retries temporary connection/gateway failures within a 60-second
+   retry window; invalid certificates, authorization and identity remain blocking.
+
+The first manager need not exist on a restored local project. Its host reads
+`POST /projects/{id}/authority/status` using the project-scoped node-authority
+secret before attempting activation. This narrowly scoped control-plane check
+does not register a team member, grant ordinary API access or make the
+destination writable; manager bootstrap still waits for transfer completion.
 
 The VPS account must support persistent user services. If `remote-host` asks
 for linger, run the printed one-time command as an administrator, for example
@@ -109,6 +121,21 @@ project when this prerequisite is missing. The private bridge token and dynamic
 port live only in a `0600` environment file; neither is embedded in the unit or
 its process arguments. `bridge-stop` stops the unit without disabling boot, and
 the next dDuo start reactivates it.
+
+The firewall must allow traffic **from the project's actual Docker network to
+the host agent's TCP port**, not from the Internet. The current port is in
+`~/.config/dduo-solo-founder/bridge/port`; do not print `agent.env`, which also
+contains the token. An authorized operator checks the network, interface and
+port before adding a narrow persistent rule, without disabling the firewall
+or removing other projects' rules. Recheck the network after a restore that
+recreates it and persistence after a VPS reboot. dDuo does not change the
+firewall automatically.
+
+The container check only reads authenticated bridge status; it neither runs
+sleep nor changes data. `container_bridge_verified: true` confirms this path,
+not successful consolidation. On failure, `remote-host` identifies the
+container and category (network, credentials, configuration or protocol)
+without proceeding to the authority claim. Repair the cause and rerun it.
 
 On first bootstrap it also prints one initial manager device token once. A
 private pending record is written before the server mutation and removed only
@@ -197,17 +224,27 @@ device receives an already-consumed conflict. If the collaborator cannot access
 the project Git repository, memory access does not grant it and work should stop
 until the repository owner authorizes Git access.
 
-Open a remote dashboard through the CLI rather than placing a permanent bearer
-in a URL:
+Open the dashboard or a Task/Plan directly from the links dDuo returns in chat.
+Each remote link contains a private browser token valid for **seven days**;
+it can be reused on different visits and browsers, without another login or
+confirmation. Anyone holding it can access that project with the issuing
+member's permissions, so do not publish it. The permanent device bearer is
+never included. The agent can also open it through the CLI:
 
 ```bash
 dduo-solo-founder dashboard --tab tasks --project-root .
 ```
 
-The CLI exchanges the device bearer for a five-minute, one-time browser ticket.
-The dashboard consumes it into a project-specific, `HttpOnly`, `Secure`,
-`SameSite=Strict` session cookie valid for seven days. Revoking a member also
-revokes that member's device and browser credentials.
+The dashboard automatically exchanges the browser token for a project-specific,
+`HttpOnly`, `Secure`, `SameSite=Strict` session cookie, then removes the token
+from the address bar. The original chat link stays reusable until expiry;
+the cookie does not outlive it. Revoking a member or device invalidates its
+links and browser access. After expiry, ask dDuo for a fresh link via
+`get_dashboard_link`; no project reconfiguration is required. Legacy one-time
+tickets remain supported for older clients.
+Logging out closes that browser session, not the reusable link. Links remain
+in the chat where they were shared; do not treat chat history or third-party
+proxy logs as secret-free storage.
 
 Every browser mutation additionally requires the CSRF value issued for that
 exact browser session. The dashboard keeps it only in origin-scoped browser
@@ -298,23 +335,43 @@ Moving a local or remote project is a controlled full-recovery operation:
    `transfer_pending` and read-only. The command exposes the read-only
    dashboard and returns a signed `activation_receipt` proving that this exact
    project, source generation, target node and one-time transfer nonce were
-   restored together.
-3. Verify that `remote-host` reports `destination_ready` and that the HTTPS
-   health endpoint is reachable. A team restored from an existing remote host
-   can also inspect the read-only dashboard with its existing credentials; a
+   restored together, only after its public HTTPS check succeeds.
+3. Check that `remote-host` reports `destination_ready` and
+   `https_verified: true`. Starting Docker/Caddy or obtaining a signed receipt
+   alone does not prove public HTTPS works. The automatic check validates the
+   certificate for the configured host/IP and calls the API through the public
+   gateway, checking the same project, source generation, target node and
+   signed receipt while the destination remains read-only. TLS verification
+   is never disabled and redirects are not followed. A team restored from an
+   existing remote host can also inspect the read-only dashboard with its existing credentials; a
    local project intentionally creates its first manager only after completion.
+   If HTTPS fails, fix the certificate, firewall or routing and retry; the
+   source is not retired and the restored destination stays read-only.
+   A temporary failure does not require cancellation or another backup: keep
+   the source frozen and clone read-only, then rerun `remote-host`. Do not
+   proceed without a successful check or bypass identity failures.
    If the move is abandoned now, discard that read-only clone and run
    `dduo-solo-founder remote-transfer-cancel --new-node-not-activated` on the
    source. The old authority becomes writable and the old receipt can no longer
    complete a later transfer.
+   After cancellation, a new transfer needs a new prepare, final backup and
+   restore; do not reuse archives or receipts from the cancelled freeze.
 4. To commit the move, run this on the old source:
 
    ```bash
    dduo-solo-founder remote-transfer-retire \
-     --activation-receipt '<ACTIVATION_RECEIPT>' --yes
+     --activation-receipt '<ACTIVATION_RECEIPT>' \
+     --destination-api-url '<HTTPS-API-URL>' \
+     --yes
    ```
 
-   The source verifies the signed receipt, marks itself irrevocably
+   Use the exact API URL printed by `remote-host`. `--destination-api-url` is
+   required for initial retirement: the source independently repeats the
+   certificate, HTTPS route and transfer-identity checks immediately before
+   finalization. A failure prevents retirement and volume cleanup; cancellation
+   is still possible before finalization. A verified local retirement marker
+   allows a cleanup retry without repeating a completed transfer.
+   After successful verification, the source marks itself irrevocably
    `transferred`, durably saves the returned `finalization_receipt`, then deletes
    only that project's old Docker volumes and unregisters its gateway route.
    Cleanup can be retried without contacting the deleted database.

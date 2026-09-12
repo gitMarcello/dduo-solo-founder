@@ -3,25 +3,39 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPException
+from http.server import ThreadingHTTPServer
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Thread
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ID = "99999999-9999-4999-8999-999999999991"
 AUTHORITY_SECRET = "ci-authority-secret-with-enough-entropy-for-handoff"
 EXPECTED_SCHEMA_REVISION = "f3b4c5d6e7f8"
+POSTGRES_IMAGE = "postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685"
+POSTGRES_PLATFORM = "linux/amd64"
+POSTGRES_VERSION = "16.15"
+# Synthetic credentials exist only for this disposable smoke. The destination
+# starts without any registered manager; install these request headers only
+# after real application bootstrap has succeeded.
+MANAGER_TOKEN = "dduo_dev_" + "m" * 43
+REQUEST_HEADERS: dict[str, dict[str, str]] = {}
 
 
 def run(command: list[str], *, environment: dict[str, str] | None = None) -> None:
@@ -57,13 +71,18 @@ def response(
     *,
     body: dict | None = None,
     headers: dict[str, str] | None = None,
+    timeout: float = 20,
 ) -> tuple[int, dict]:
     encoded = json.dumps(body).encode("utf-8") if body is not None else None
-    outgoing = {"Content-Type": "application/json", **(headers or {})}
+    outgoing = {
+        "Content-Type": "application/json",
+        **REQUEST_HEADERS.get(base, {}),
+        **(headers or {}),
+    }
     try:
         with urlopen(
             Request(f"{base}{path}", data=encoded, headers=outgoing, method=method),
-            timeout=20,
+            timeout=timeout,
         ) as response:
             status = response.status
             payload = response.read()
@@ -81,8 +100,9 @@ def request(
     body: dict | None = None,
     headers: dict[str, str] | None = None,
     expected: int = 200,
+    timeout: float = 20,
 ) -> dict:
-    status, payload = response(base, method, path, body=body, headers=headers)
+    status, payload = response(base, method, path, body=body, headers=headers, timeout=timeout)
     if status != expected:
         raise RuntimeError(
             f"{method} {path} returned {status}, expected {expected}: "
@@ -96,9 +116,54 @@ def require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
+def postgres_evidence(name: str, environment: dict[str, str], override: Path) -> None:
+    """Fail if the smoke used a cached client/server other than its declared version."""
+    prefix = [
+        "docker", "compose", "-p", name, "-f", str(ROOT / "compose.yaml"),
+        "-f", str(override),
+    ]
+
+    def output(arguments: list[str]) -> str:
+        return subprocess.run(
+            prefix + arguments, cwd=ROOT, env=environment, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+
+    client = output(["exec", "-T", "postgres", "psql", "--version"])
+    server = output([
+        "exec", "-T", "postgres", "psql", "-U", "dduo_solo_founder",
+        "-d", "dduo_solo_founder", "-Atc", "SHOW server_version",
+    ])
+    expected = environment["DDUO_SMOKE_POSTGRES_VERSION"]
+    require(client.split()[2] == expected, f"unexpected restore psql client: {client}")
+    require(server.split()[0] == expected, f"unexpected PostgreSQL server: {server}")
+    container = output(["ps", "-q", "postgres"])
+    actual_image = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Image}}", container],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    expected_image, actual_platform = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}} {{.Os}}/{{.Architecture}}",
+         environment["DDUO_SMOKE_POSTGRES_IMAGE"]],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip().split()
+    require(actual_image == expected_image, "Compose ignored the pinned PostgreSQL image")
+    require(actual_platform == environment["DDUO_SMOKE_POSTGRES_PLATFORM"],
+            "PostgreSQL image architecture differs from the requested test platform")
+    dump_client = output(["exec", "-T", "api", "pg_dump", "--version"])
+    print("PostgreSQL runtime evidence: " + json.dumps({
+        "stack": name, "image": environment["DDUO_SMOKE_POSTGRES_IMAGE"],
+        "image_id": actual_image, "platform": actual_platform,
+        "psql": client, "server": server, "source_api_pg_dump": dump_client,
+    }), flush=True)
+
+
 def database_snapshot(name: str, environment: dict[str, str], override: Path) -> dict:
     """Read durable rows directly so API projections cannot hide restore losses."""
     tables = {
+        "agent_sessions": "id",
+        "turns": "id",
+        "memories": "id",
         "sprints": "id",
         "tasks": "id",
         "plans": "id",
@@ -361,7 +426,9 @@ def wait_for_health(base: str) -> None:
     raise RuntimeError(f"API did not become healthy: {base}")
 
 
-def stack_environment(root: Path, *, api_port: int, web_port: int, node_id: str) -> dict[str, str]:
+def stack_environment(
+    root: Path, *, api_port: int, web_port: int, node_id: str, auth_required: bool = False
+) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(
         {
@@ -380,6 +447,7 @@ def stack_environment(root: Path, *, api_port: int, web_port: int, node_id: str)
             "DDUO_SOLO_FOUNDER_PROJECT_ID": PROJECT_ID,
             "DDUO_NODE_ID": node_id,
             "DDUO_NODE_AUTHORITY_SECRET": AUTHORITY_SECRET,
+            "DDUO_AUTH_REQUIRED": "true" if auth_required else "false",
         }
     )
     return environment
@@ -403,12 +471,73 @@ def prepare_files(root: Path) -> None:
     )
 
 
+def restore_frozen_clone(
+    source_name: str,
+    destination_name: str,
+    source_env: dict[str, str],
+    destination_env: dict[str, str],
+    override: Path,
+    dump: Path,
+    destination: str,
+) -> None:
+    """Exercise the encrypted backup API and production restore CLI end to end."""
+    from dduo_solo_founder.launcher import _validate_final_transfer_backup
+
+    source = f"http://127.0.0.1:{source_env['DDUO_SOLO_FOUNDER_API_PORT']}"
+    created = request(source, "POST", f"/projects/{PROJECT_ID}/backups", timeout=120)
+    _validate_final_transfer_backup(created, PROJECT_ID, AUTHORITY_SECRET)
+    require(created["manifest"]["history"]["included"], "archive omitted portable history")
+    archive = Path(source_env["DDUO_SOLO_FOUNDER_BACKUP_SOURCE"]) / created["archive_name"]
+    require(archive.is_file(), "verified final archive is not available on the host")
+    # Each attempt models a clean destination host. Remove only the disposable
+    # clone from the preceding cancelled handoff; the parent owns these labels.
+    compose(destination_name, destination_env, override, "down", "-v", "--remove-orphans")
+    host = dump.parent / f"restore-host-{uuid.uuid4().hex[:8]}"
+    home = host / "home"
+    home.mkdir(parents=True)
+    environment = {
+        **destination_env,
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        # Docker's vendor CLI plugin/context discovery belongs to the test
+        # runner, not to the artificial dDuo host. Read it without modifying it.
+        "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker")),
+        "DDUO_SOLO_FOUNDER_HOME": str(ROOT),
+        "DDUO_AUTH_REQUIRED": "false",
+        "DDUO_SOLO_FOUNDER_BACKUP_KEY_SOURCE": source_env["DDUO_SOLO_FOUNDER_BACKUP_KEY_SOURCE"],
+    }
+    subprocess.run(
+        [
+            sys.executable, str(ROOT / "scripts/e2e_transfer_restore.py"),
+            "--archive", str(archive), "--project-root", str(host / "checkout"),
+            "--compose-name", destination_name, "--compose-override", str(override),
+        ],
+        env=environment,
+        cwd=ROOT,
+        check=True,
+    )
+    # remote-host switches to real application authentication after restore.
+    compose(destination_name, destination_env, override, "up", "-d", "qdrant", "api")
+    wait_for_health(destination)
+    postgres_evidence(destination_name, destination_env, override)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--postgres-image", default=POSTGRES_IMAGE)
+    parser.add_argument("--postgres-platform", choices=("linux/amd64", "linux/arm64"), default=POSTGRES_PLATFORM)
+    parser.add_argument("--postgres-version", default=POSTGRES_VERSION)
+    args = parser.parse_args()
+    require(re.fullmatch(r"postgres@sha256:[0-9a-f]{64}", args.postgres_image) is not None,
+            "restore smoke requires a pinned official PostgreSQL digest, not a floating tag")
+    require(re.fullmatch(r"16\.[0-9]+", args.postgres_version) is not None,
+            "restore smoke requires an exact PostgreSQL 16 minor version")
     run_id = uuid.uuid4().hex[:12]
     source_name = f"dduo-authority-{run_id}-source"
     destination_name = f"dduo-authority-{run_id}-destination"
     for port in (18766, 18767):
         with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 listener.bind(("127.0.0.1", port))
             except OSError as exc:
@@ -421,7 +550,9 @@ def main() -> None:
         check=True,
     )
     with tempfile.TemporaryDirectory(prefix="dduo-authority-e2e-") as temporary:
-        root = Path(temporary)
+        # macOS /var is a symlink; private restored credential directories
+        # correctly reject symlinked ancestry, so use the canonical test root.
+        root = Path(temporary).resolve()
         source_root = root / "source"
         destination_root = root / "destination"
         prepare_files(source_root)
@@ -431,9 +562,14 @@ def main() -> None:
             "\n".join(
                 (
                     "services:",
+                    "  postgres:",
+                    f"    image: {args.postgres_image}",
+                    f"    platform: {args.postgres_platform}",
                     "  api:",
                     f"    image: {api_image}",
                     "    build: null",
+                    "    environment:",
+                    "      DDUO_AUTH_REQUIRED: ${DDUO_AUTH_REQUIRED}",
                 )
             )
             + "\n",
@@ -443,14 +579,47 @@ def main() -> None:
             source_root, api_port=18766, web_port=20766, node_id="node-old"
         )
         destination_env = stack_environment(
-            destination_root, api_port=18767, web_port=20767, node_id="node-new"
+            destination_root,
+            api_port=18767,
+            web_port=20767,
+            node_id="node-new",
+            auth_required=True,
         )
+        for environment in (source_env, destination_env):
+            environment.update({
+                "DDUO_SMOKE_POSTGRES_IMAGE": args.postgres_image,
+                "DDUO_SMOKE_POSTGRES_PLATFORM": args.postgres_platform,
+                "DDUO_SMOKE_POSTGRES_VERSION": args.postgres_version,
+            })
         source = "http://127.0.0.1:18766"
         destination = "http://127.0.0.1:18767"
         authority_headers = {"X-DDUO-Authority": AUTHORITY_SECRET}
+        import ci_backup_bridge
+        from ci_backup_bridge import build_payload, handler, supplement_file
+
+        fixture_payload = json.loads(build_payload(PROJECT_ID))
+        fixture_payload["files"][0] = supplement_file(
+            "secrets/dduo.env",
+            f"OPENAI_API_KEY=ci-placeholder\nDDUO_NODE_AUTHORITY_SECRET={AUTHORITY_SECRET}\n".encode(),
+        )
+        token = f"ci-transfer-{uuid.uuid4().hex}"
+        with patch.object(ci_backup_bridge, "build_payload", lambda _project: json.dumps(fixture_payload).encode()):
+            bridge = ThreadingHTTPServer(("0.0.0.0", 0), handler(PROJECT_ID, token))
+        bridge_thread = Thread(target=bridge.serve_forever, daemon=True)
+        bridge_thread.start()
+        source_env.update({
+            "DDUO_SOLO_FOUNDER_BACKUP_CONFIGURED": "true",
+            "DDUO_SOLO_FOUNDER_BACKUP_INCLUDE_QDRANT": "false",
+            "DDUO_CLI_BRIDGE_URL": f"http://host.docker.internal:{bridge.server_port}",
+            "DDUO_CLI_BRIDGE_TOKEN": token,
+        })
+        from dduo_solo_founder.backup import generate_recovery_key
+
+        (source_root / "backup.key").write_text(generate_recovery_key() + "\n")
         try:
             compose(source_name, source_env, override, "up", "-d", "postgres", "qdrant", "api")
             wait_for_health(source)
+            postgres_evidence(source_name, source_env, override)
             request(
                 source,
                 "POST",
@@ -468,8 +637,56 @@ def main() -> None:
                 body={"node_id": "node-old", "expected_generation": 1},
                 headers=authority_headers,
             )
+            require(
+                request(source, "GET", f"/projects/{PROJECT_ID}/team")["members"] == [],
+                "source fixture must not have a pre-existing remote manager",
+            )
             seeded = seed_sprint_lifecycle(source)
+            compose(
+                source_name, source_env, override, "exec", "-T", "postgres", "psql",
+                "-U", "dduo_solo_founder", "-d", "dduo_solo_founder", "-v", "ON_ERROR_STOP=1",
+                "-c", f"""
+                INSERT INTO backup_records
+                    (id, project_id, trigger, status, archive_name, size_bytes, includes_qdrant,
+                     retained, source_generation, manifest, error, created_at, completed_at, verified_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000048', '{PROJECT_ID}', 'manual', 'verified',
+                     'quoted-history.dduobackup', 48, false, false, 0,
+                     '{{"text":"caffè, qualità — quote \\\" and newline\\n and \\u005c\\u005c"}}'::json,
+                     NULL, now(), now(), now()),
+                    ('00000000-0000-4000-8000-000000000049', '{PROJECT_ID}', 'manual', 'failed',
+                     NULL, NULL, false, false, 0, '{{"failure":"artificial"}}'::json,
+                     E'artificial failure\\nsecond line', now(), NULL, NULL);
+                INSERT INTO agent_sessions
+                    (id, project_id, client, external_id, off_record, started_at, last_activity_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000051', '{PROJECT_ID}', 'codex',
+                     'synthetic-transfer-conversation', false, now(), now());
+                INSERT INTO turns
+                    (id, project_id, session_id, external_id, user_prompt, assistant_response,
+                     committed, status, stop_attempts, semantic_commit, off_record, sleep_status,
+                     retrieved_memory_ids, used_memory_ids, created_at, committed_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000052', '{PROJECT_ID}',
+                     '00000000-0000-4000-8000-000000000051', 'synthetic-turn',
+                     'Ricorda questa scelta artificiale: caffè e qualità.',
+                     'Scelta artificiale registrata.', true, 'committed', 1, '{{}}'::json,
+                     false, 'processed', '[]'::json, '[]'::json, now(), now());
+                INSERT INTO memories
+                    (id, project_id, node_type, node_key, text, status, memory_group_id, revision,
+                     source_turn_ids, source_message_ids, source_node_ids, source_artifact_ids,
+                     valid_from, metadata, created_at, updated_at)
+                VALUES
+                    ('00000000-0000-4000-8000-000000000053', '{PROJECT_ID}', 'reusable_fact',
+                     'synthetic-transfer-memory', 'Scelta artificiale: caffè e qualità.', 'active',
+                     '00000000-0000-4000-8000-000000000053', 1,
+                     '["00000000-0000-4000-8000-000000000052"]'::json,
+                     '[]'::json, '[]'::json, '[]'::json, now(), '{{"fixture":true}}'::json, now(), now());
+                """,
+            )
             durable = database_snapshot(source_name, source_env, override)
+            require(len(durable["memories"]) == len(durable["turns"]) == 1,
+                    "transfer must exercise nonempty memory and committed conversation")
             carried_revisions = [
                 row
                 for row in durable["task_revisions"]
@@ -510,77 +727,84 @@ def main() -> None:
                 "?expected_generation=1&target_node_id=node-new",
             )
 
-            compose(
-                source_name,
-                source_env,
-                override,
-                "exec",
-                "-T",
-                "postgres",
-                "pg_dump",
-                "-Fc",
-                "-U",
-                "dduo_solo_founder",
-                "-d",
-                "dduo_solo_founder",
-                "-f",
-                "/tmp/authority.dump",
-            )
             dump = root / "authority.dump"
-            compose(
+            restore_frozen_clone(
                 source_name,
+                destination_name,
                 source_env,
-                override,
-                "cp",
-                "postgres:/tmp/authority.dump",
-                str(dump),
-            )
-            compose(
-                destination_name,
                 destination_env,
                 override,
-                "up",
-                "-d",
-                "--wait",
-                "postgres",
+                dump,
+                destination,
             )
-            compose(
-                destination_name,
-                destination_env,
-                override,
-                "cp",
-                str(dump),
-                "postgres:/tmp/authority.dump",
+            authority_path = f"/projects/{PROJECT_ID}/authority"
+            # Prove real authentication, including the original bootstrap
+            # deadlock: a generated-but-unregistered manager token stays 401.
+            request(destination, "GET", authority_path, expected=401)
+            request(
+                destination,
+                "GET",
+                authority_path,
+                headers={"Authorization": f"Bearer {MANAGER_TOKEN}"},
+                expected=401,
             )
-            compose(
-                destination_name,
-                destination_env,
-                override,
-                "exec",
-                "-T",
-                "postgres",
-                "pg_restore",
-                "--exit-on-error",
-                "--clean",
-                "--if-exists",
-                "--no-owner",
-                "--no-privileges",
-                "-U",
-                "dduo_solo_founder",
-                "-d",
-                "dduo_solo_founder",
-                "/tmp/authority.dump",
+            destination_status = request(
+                destination,
+                "POST",
+                authority_path + "/status",
+                body={"node_id": "node-new"},
+                headers=authority_headers,
             )
-            compose(
-                destination_name,
-                destination_env,
-                override,
-                "up",
-                "-d",
-                "qdrant",
-                "api",
+            require(destination_status["writable"] is False, "restored clone must be read-only")
+            require(
+                destination_status["state"] == "transfer_pending", "restore lost transfer fence"
             )
-            wait_for_health(destination)
+            bootstrap_payload = {
+                "display_name": "Isolated smoke manager",
+                "device_id": "node-new",
+                "device_label": "Smoke infrastructure control",
+                "device_token": MANAGER_TOKEN,
+            }
+            request(
+                destination,
+                "POST",
+                f"/projects/{PROJECT_ID}/team/bootstrap",
+                body=bootstrap_payload,
+                headers=authority_headers,
+                expected=409,
+            )
+            request(
+                destination,
+                "POST",
+                f"/projects/{PROJECT_ID}/tasks",
+                body={"title": "node secret must not authorize application writes"},
+                headers=authority_headers,
+                expected=401,
+            )
+            request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-new", "expected_generation": 1},
+                headers={"X-DDUO-Authority": "wrong-secret"},
+                expected=401,
+            )
+            request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-wrong", "expected_generation": 1},
+                headers=authority_headers,
+                expected=409,
+            )
+            request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-new", "expected_generation": 2},
+                headers=authority_headers,
+                expected=409,
+            )
             activated = request(
                 destination,
                 "POST",
@@ -590,12 +814,95 @@ def main() -> None:
             )
             if activated.get("writable") is not False:
                 raise RuntimeError("destination became writable before source finalization")
+            abandoned_receipt = activated["activation_receipt"]
+            cancelled = request(
+                source,
+                "POST",
+                authority_path + "/cancel?expected_generation=1",
+            )
+            require(cancelled["writable"] is True, "cancel did not restore source writes")
+            session = request(
+                source,
+                "POST",
+                f"/projects/{PROJECT_ID}/sessions",
+                body={"client": "codex", "external_id": "after-cancel"},
+            )
+            require(bool(session.get("id")), "source write after cancellation failed")
+            # This authorized post-cancellation write belongs in the new final
+            # archive, unlike the abandoned first snapshot.
+            durable = database_snapshot(source_name, source_env, override)
+            clone_after_cancel = request(
+                destination,
+                "POST",
+                authority_path + "/status",
+                body={"node_id": "node-new"},
+                headers=authority_headers,
+            )
+            require(clone_after_cancel["writable"] is False, "abandoned clone became writable")
+            request(
+                source,
+                "POST",
+                authority_path + "/prepare?expected_generation=1&target_node_id=node-new",
+            )
+            request(
+                source,
+                "POST",
+                authority_path + "/finalize?expected_generation=1",
+                body={"activation_receipt": abandoned_receipt},
+                expected=409,
+            )
+            restore_frozen_clone(
+                source_name,
+                destination_name,
+                source_env,
+                destination_env,
+                override,
+                dump,
+                destination,
+            )
+            activated = request(
+                destination,
+                "POST",
+                authority_path + "/activate",
+                body={"node_id": "node-new", "expected_generation": 1},
+                headers=authority_headers,
+            )
+            require(
+                activated["activation_receipt"] != abandoned_receipt,
+                "new prepare reused the old nonce",
+            )
+            altered = activated["activation_receipt"].split(".")
+            altered[2] = ("B" if altered[2][0] == "A" else "A") + altered[2][1:]
+            request(
+                source,
+                "POST",
+                authority_path + "/finalize?expected_generation=1",
+                body={"activation_receipt": ".".join(altered)},
+                expected=409,
+            )
             finalized = request(
                 source,
                 "POST",
                 f"/projects/{PROJECT_ID}/authority/finalize?expected_generation=1",
                 body={"activation_receipt": activated["activation_receipt"]},
             )
+            request(source, "POST", authority_path + "/cancel?expected_generation=1", expected=409)
+            require(finalized["writable"] is False, "finalized source remained writable")
+            request(
+                source,
+                "POST",
+                f"/projects/{PROJECT_ID}/tasks",
+                body={"title": "finalized source must already be fenced"},
+                expected=409,
+            )
+            ready = request(
+                destination,
+                "POST",
+                authority_path + "/status",
+                body={"node_id": "node-new"},
+                headers=authority_headers,
+            )
+            require(ready["writable"] is False, "destination wrote before completion receipt")
             completed = request(
                 destination,
                 "POST",
@@ -609,9 +916,29 @@ def main() -> None:
             )
             if completed.get("state") != "active" or completed.get("generation") != 2:
                 raise RuntimeError("destination did not own the next authority generation")
+            team = request(
+                destination,
+                "POST",
+                f"/projects/{PROJECT_ID}/team/bootstrap",
+                body=bootstrap_payload,
+                headers=authority_headers,
+            )
+            require(len(team["members"]) == 1, "first bootstrap must create exactly one manager")
+            REQUEST_HEADERS[destination] = {"Authorization": f"Bearer {MANAGER_TOKEN}"}
+            authenticated = request(destination, "GET", f"/projects/{PROJECT_ID}/team")
+            require(
+                authenticated["current_member"]["project_id"] == PROJECT_ID,
+                "manager token did not authenticate to the restored project",
+            )
+            request(
+                destination,
+                "GET",
+                "/projects/99999999-9999-4999-8999-999999999992/team",
+                expected=404,
+            )
             require(
                 database_snapshot(destination_name, destination_env, override) == durable,
-                "PostgreSQL restore changed Sprint, task, plan, revision, or receipt rows",
+                "PostgreSQL restore changed memory, turn, session, Sprint, Work, or receipt rows",
             )
             verify_restored_sprints(destination, seeded)
             require(
@@ -619,8 +946,8 @@ def main() -> None:
                 "replaying restored Sprint receipts changed durable state",
             )
             print(
-                "Sprint restore passed: lifecycle, two closure histories, statuses, ordered plan "
-                "links, task/plan revisions, and all mutation receipts preserved."
+                "Memory/Work restore passed: one durable memory, one committed turn, two sessions, "
+                "Sprint lifecycle/closures, plan links, revisions, and mutation receipts preserved."
             )
             verify_concurrent_sprint_start(destination)
             request(
@@ -638,7 +965,10 @@ def main() -> None:
             )
             if created.get("title") != "destination is authoritative":
                 raise RuntimeError("destination write verification failed")
-            print("Authority E2E passed: one source frozen, one restored destination activated.")
+            print(
+                "Authority E2E passed: authenticated destination without prior manager; "
+                "cancel/resume, stale and altered receipt rejection, and one writable authority."
+            )
         except Exception:
             for name, environment in (
                 (source_name, source_env),
@@ -650,6 +980,9 @@ def main() -> None:
                     pass
             raise
         finally:
+            bridge.shutdown()
+            bridge.server_close()
+            bridge_thread.join(timeout=5)
             for name, environment in (
                 (destination_name, destination_env),
                 (source_name, source_env),

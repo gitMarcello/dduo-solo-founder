@@ -2,7 +2,7 @@
 
 # Backup and recovery
 
-Recovery guide for dDuo Solo Founder `0.2.0-beta.1`.
+Recovery guide for dDuo Solo Founder `0.2.0-beta.2`.
 
 ## Recovery contract
 
@@ -29,6 +29,18 @@ They retain unmasked project context, including secrets if supplied in that
 content. Raw CLI diagnostics, runtime authentication keys and unrelated paths
 are not collected as technical telemetry fields. Their recording alone does not schedule a
 backup, and missing historical snapshots are never invented.
+
+Backup history is imported directly into PostgreSQL through stdin, within a
+transaction. It needs no files readable by the database server user inside
+the container and no permission changes. An import error stops the restore;
+repeating the import does not duplicate existing records. Encryption and
+compatibility with existing archives remain unchanged.
+Temporary-table creation, `COPY`, and insertion are separate commands in one
+`psql --single-transaction` session with `ON_ERROR_STOP=1`. This preserves
+complete rollback and avoids the `psql 16.15` problem with `COPY` following
+other statements in the same `--command` string.
+Restore waits for PostgreSQL's final TCP server, not its temporary initialization
+socket, before importing the database.
 
 ## Archive format
 
@@ -294,7 +306,9 @@ does not require a transfer archive.
    then run `dduo-solo-founder remote-host --public-ip <PUBLIC-IP>`. The restored
    clone stays read-only and returns a signed `activation_receipt`; it does not
    advance the generation or become authoritative yet.
-3. Verify the `destination_ready` response and HTTPS health on the new endpoint.
+3. Verify `destination_ready` and `https_verified: true`. `remote-host` validates
+   the public certificate and the complete HTTPS route to this exact read-only
+   project; a signed receipt or a running gateway alone is insufficient.
    Existing remote-team credentials can inspect the read-only dashboard; a
    local project defers first-manager bootstrap until completion. If the move
    is abandoned at this phase, discard the clone and run
@@ -304,9 +318,15 @@ does not require a transfer archive.
 
    ```bash
    dduo-solo-founder remote-transfer-retire \
-     --activation-receipt '<ACTIVATION_RECEIPT>' --yes
+     --activation-receipt '<ACTIVATION_RECEIPT>' \
+     --destination-api-url '<HTTPS-API-URL>' \
+     --yes
    ```
 
+   Use the exact API URL printed by `remote-host`. Before finalization, the
+   source independently verifies the certificate, HTTPS route and transfer
+   identity, without disabling TLS verification or following redirects. If
+   verification fails, retirement and volume cleanup do not begin.
    It cryptographically binds the acknowledgement to the project, frozen
    generation, source, target and transfer nonce. The source becomes
    irreversibly `transferred`, persists a `finalization_receipt` before cleanup,

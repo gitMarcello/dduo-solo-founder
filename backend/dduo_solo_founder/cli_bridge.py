@@ -2633,7 +2633,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if parsed.path != "/health":
             self._send(404, {"error": "not_found"})
             return
-        if not self._authorized():
+        # Docker receives only the credential derived for its exact project.
+        # Its read-only connectivity probe must not need the host master token.
+        project_ids = parse_qs(parsed.query, keep_blank_values=True).get("project_id")
+        project_id = project_ids[0] if project_ids and len(project_ids) == 1 else None
+        if project_ids is not None and (
+            not project_id
+            or len(project_id) > 160
+            or any(character.isspace() or ord(character) < 32 for character in project_id)
+        ):
+            self._send(422, {"error": "invalid_request"})
+            return
+        if not self._authorized(project_id=project_id):
             self._send(401, {"error": "unauthorized"})
             return
         self._send(
@@ -2641,6 +2652,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             {
                 "status": "ok",
                 "bridge_protocol_version": BRIDGE_PROTOCOL_VERSION,
+                **({"project_id": project_id} if project_id is not None else {}),
                 "providers": {
                     "codex": bool(shutil.which("codex")),
                     "claude": bool(shutil.which("claude")),

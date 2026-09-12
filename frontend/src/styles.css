@@ -146,6 +146,9 @@ nav small {
 .status.attention i {
   background: #d99a2b;
 }
+.status.unknown i {
+  background: #8e8e93;
+}
 main {
   min-width: 0;
   background: var(--canvas);

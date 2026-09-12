@@ -2,7 +2,7 @@
 
 # Architecture
 
-Technical reference for `v0.2.0-beta.1`.
+Technical reference for `v0.2.0-beta.2`.
 
 dDuo Solo Founder is a project-isolated operating memory for Codex and Claude
 Code. A project can run locally or on an authenticated VPS; its UI is
