@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -26,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ID = "99999999-9999-4999-8999-999999999991"
 AUTHORITY_SECRET = "ci-authority-secret-with-enough-entropy-for-handoff"
 EXPECTED_SCHEMA_REVISION = "f3b4c5d6e7f8"
+POSTGRES_IMAGE = "postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685"
+POSTGRES_PLATFORM = "linux/amd64"
+POSTGRES_VERSION = "16.15"
 # Synthetic credentials exist only for this disposable smoke. The destination
 # starts without any registered manager; install these request headers only
 # after real application bootstrap has succeeded.
@@ -109,6 +114,48 @@ def request(
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def postgres_evidence(name: str, environment: dict[str, str], override: Path) -> None:
+    """Fail if the smoke used a cached client/server other than its declared version."""
+    prefix = [
+        "docker", "compose", "-p", name, "-f", str(ROOT / "compose.yaml"),
+        "-f", str(override),
+    ]
+
+    def output(arguments: list[str]) -> str:
+        return subprocess.run(
+            prefix + arguments, cwd=ROOT, env=environment, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+
+    client = output(["exec", "-T", "postgres", "psql", "--version"])
+    server = output([
+        "exec", "-T", "postgres", "psql", "-U", "dduo_solo_founder",
+        "-d", "dduo_solo_founder", "-Atc", "SHOW server_version",
+    ])
+    expected = environment["DDUO_SMOKE_POSTGRES_VERSION"]
+    require(client.split()[2] == expected, f"unexpected restore psql client: {client}")
+    require(server.split()[0] == expected, f"unexpected PostgreSQL server: {server}")
+    container = output(["ps", "-q", "postgres"])
+    actual_image = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Image}}", container],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    expected_image, actual_platform = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}} {{.Os}}/{{.Architecture}}",
+         environment["DDUO_SMOKE_POSTGRES_IMAGE"]],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip().split()
+    require(actual_image == expected_image, "Compose ignored the pinned PostgreSQL image")
+    require(actual_platform == environment["DDUO_SMOKE_POSTGRES_PLATFORM"],
+            "PostgreSQL image architecture differs from the requested test platform")
+    dump_client = output(["exec", "-T", "api", "pg_dump", "--version"])
+    print("PostgreSQL runtime evidence: " + json.dumps({
+        "stack": name, "image": environment["DDUO_SMOKE_POSTGRES_IMAGE"],
+        "image_id": actual_image, "platform": actual_platform,
+        "psql": client, "server": server, "source_api_pg_dump": dump_client,
+    }), flush=True)
 
 
 def database_snapshot(name: str, environment: dict[str, str], override: Path) -> dict:
@@ -472,9 +519,19 @@ def restore_frozen_clone(
     # remote-host switches to real application authentication after restore.
     compose(destination_name, destination_env, override, "up", "-d", "qdrant", "api")
     wait_for_health(destination)
+    postgres_evidence(destination_name, destination_env, override)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--postgres-image", default=POSTGRES_IMAGE)
+    parser.add_argument("--postgres-platform", choices=("linux/amd64", "linux/arm64"), default=POSTGRES_PLATFORM)
+    parser.add_argument("--postgres-version", default=POSTGRES_VERSION)
+    args = parser.parse_args()
+    require(re.fullmatch(r"postgres@sha256:[0-9a-f]{64}", args.postgres_image) is not None,
+            "restore smoke requires a pinned official PostgreSQL digest, not a floating tag")
+    require(re.fullmatch(r"16\.[0-9]+", args.postgres_version) is not None,
+            "restore smoke requires an exact PostgreSQL 16 minor version")
     run_id = uuid.uuid4().hex[:12]
     source_name = f"dduo-authority-{run_id}-source"
     destination_name = f"dduo-authority-{run_id}-destination"
@@ -505,6 +562,9 @@ def main() -> None:
             "\n".join(
                 (
                     "services:",
+                    "  postgres:",
+                    f"    image: {args.postgres_image}",
+                    f"    platform: {args.postgres_platform}",
                     "  api:",
                     f"    image: {api_image}",
                     "    build: null",
@@ -525,6 +585,12 @@ def main() -> None:
             node_id="node-new",
             auth_required=True,
         )
+        for environment in (source_env, destination_env):
+            environment.update({
+                "DDUO_SMOKE_POSTGRES_IMAGE": args.postgres_image,
+                "DDUO_SMOKE_POSTGRES_PLATFORM": args.postgres_platform,
+                "DDUO_SMOKE_POSTGRES_VERSION": args.postgres_version,
+            })
         source = "http://127.0.0.1:18766"
         destination = "http://127.0.0.1:18767"
         authority_headers = {"X-DDUO-Authority": AUTHORITY_SECRET}
@@ -553,6 +619,7 @@ def main() -> None:
         try:
             compose(source_name, source_env, override, "up", "-d", "postgres", "qdrant", "api")
             wait_for_health(source)
+            postgres_evidence(source_name, source_env, override)
             request(
                 source,
                 "POST",

@@ -102,6 +102,9 @@ jobs:
           tests/test_launcher.py::test_login_codex_imports_only_the_explicitly_selected_profile
           tests/test_launcher.py::test_full_recovery_supplement_restores_only_project_scoped_state
           tests/test_launcher.py::test_full_recovery_supplement_validates_everything_before_writing
+          tests/test_launcher.py::test_backup_restore_drill_uses_disposable_database
+          tests/test_launcher.py::test_backup_restore_drill_readiness_timeout_cleans_up_without_restore
+          tests/test_launcher.py::test_postgres_wait_and_checked_compose
       - name: Cross-platform installer dry run
         run: node bin/install.mjs --dry-run --yes
       - name: Native locked installer, update, rollback, MCP and hooks
@@ -162,10 +165,17 @@ jobs:
         run: docker compose config >/dev/null
       - name: Build production images
         run: docker compose build api worker web
-      - name: Exercise encrypted CLI restore, backup history, and two-stack authority handoff
+      - name: Exercise encrypted CLI restore and authority handoff on PostgreSQL 16.15
         run: |
           docker build -t dduo-authority-smoke-api -f docker/api.Dockerfile .
-          python3 scripts/e2e_authority_transfer.py
+          python3 scripts/e2e_authority_transfer.py \
+            --postgres-image postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 \
+            --postgres-platform linux/amd64 --postgres-version 16.15
+      - name: Preserve encrypted CLI restore compatibility with PostgreSQL 16.14
+        run: |
+          python3 scripts/e2e_authority_transfer.py \
+            --postgres-image postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 \
+            --postgres-platform linux/amd64 --postgres-version 16.14
       - name: Smoke test migrations and health
         run: |
           mkdir -p .ci-backups .ci-project

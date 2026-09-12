@@ -12,7 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
+import uuid
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -39,12 +42,73 @@ def main() -> None:
     from typer.testing import CliRunner
 
     from dduo_solo_founder import launcher, project_config
-    from dduo_solo_founder.backup import verify_archive
+    from dduo_solo_founder.backup import BackupError, verify_archive
 
     project_id = os.environ["DDUO_SOLO_FOUNDER_PROJECT_ID"]
     api_port = int(os.environ["DDUO_SOLO_FOUNDER_API_PORT"])
     web_port = int(os.environ["DDUO_SOLO_FOUNDER_WEB_PORT"])
     key = Path(os.environ["DDUO_SOLO_FOUNDER_BACKUP_KEY_SOURCE"]).read_text().strip()
+    postgres_image = os.environ["DDUO_SMOKE_POSTGRES_IMAGE"]
+    postgres_platform = os.environ["DDUO_SMOKE_POSTGRES_PLATFORM"]
+    postgres_version = os.environ["DDUO_SMOKE_POSTGRES_VERSION"]
+    if not re.fullmatch(r"postgres@sha256:[0-9a-f]{64}", postgres_image):
+        raise RuntimeError("restore smoke requires a pinned PostgreSQL digest")
+    if postgres_platform not in {"linux/amd64", "linux/arm64"}:
+        raise RuntimeError("restore smoke requires an explicit supported platform")
+    native_run = subprocess.run
+    standalone_images: list[str] = []
+    drill_names: set[str] = set()
+    verified_drills: set[str] = set()
+
+    def pinned_postgres_run(command, **kwargs):
+        # Test-host routing only: production currently launches its standalone
+        # dump verifier and restore drill with a floating tag. Pin BOTH here;
+        # do not let a cached 16.14 drill certify a 16.15 destination run.
+        if isinstance(command, list) and command[:2] == ["docker", "run"] and "postgres:16-alpine" in command:
+            command = list(command)
+            command[command.index("postgres:16-alpine")] = postgres_image
+            command[2:2] = ["--platform", postgres_platform]
+            standalone_images.append(postgres_image)
+            if "--name" in command:
+                name = command[command.index("--name") + 1]
+                if not name.startswith("dduo-restore-drill-"):
+                    raise RuntimeError("unexpected standalone PostgreSQL target")
+                drill_names.add(name)
+        result = native_run(command, **kwargs)
+        if (
+            isinstance(command, list) and command[:2] == ["docker", "exec"]
+            and command[2] in drill_names and command[2] not in verified_drills
+            and "pg_restore" in command and result.returncode == 0
+        ):
+            name = command[2]
+            client = native_run(
+                ["docker", "exec", name, "psql", "--version"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            server = native_run(
+                ["docker", "exec", name, "psql", "-U", "dduo", "-d", "dduo_restore_drill",
+                 "-Atc", "SHOW server_version"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            if client.split()[2] != postgres_version or server.split()[0] != postgres_version:
+                raise RuntimeError("standalone restore drill used an unexpected PostgreSQL version")
+            verified_drills.add(name)
+            print("Standalone restore drill evidence: " + json.dumps({
+                "image": postgres_image, "platform": postgres_platform,
+                "psql": client, "server": server,
+            }), flush=True)
+        return result
+
+    verifier_version = native_run(
+        ["docker", "run", "--rm", "--platform", postgres_platform, postgres_image,
+         "pg_restore", "--version"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if verifier_version.split()[2] != postgres_version:
+        raise RuntimeError("standalone dump verifier used an unexpected PostgreSQL version")
+    print("Standalone dump verifier evidence: " + json.dumps({
+        "image": postgres_image, "platform": postgres_platform, "pg_restore": verifier_version,
+    }), flush=True)
 
     def isolated_compose(
         project: dict,
@@ -78,6 +142,7 @@ def main() -> None:
     # envelope. Restore must not start a host-level background agent in CI.
     with (
         patch.object(launcher, "compose", isolated_compose),
+        patch.object(launcher.subprocess, "run", pinned_postgres_run),
         patch.object(launcher, "compose_name", lambda _id: args.compose_name),
         patch.object(launcher, "ensure_cli_bridge", lambda: None),
         patch.object(project_config, "_available_port_pair", lambda *_a, **_kw: (api_port, web_port)),
@@ -92,6 +157,8 @@ def main() -> None:
         print(result.stdout)
         if result.exit_code != 0:
             raise RuntimeError("production backup restore CLI failed") from result.exception
+        if len(standalone_images) < 2 or not verified_drills or drill_names != verified_drills:
+            raise RuntimeError("production restore omitted the pinned dump verifier or restore drill")
         proof = args.project_root / launcher.DISASTER_RECOVERY_FILE
         if not proof.is_file():
             raise RuntimeError("production restore did not write its recovery proof")
@@ -136,7 +203,31 @@ def main() -> None:
                 raise RuntimeError("portable history replay did not visit every row")
             if stored_rows() != first:
                 raise RuntimeError("replaying portable history changed durable rows")
-        print("Production restore CLI passed; encrypted archive, recovery proof, history replay verified.")
+            # Source-generation is validated as a nonnegative Python integer,
+            # but PostgreSQL's integer column has a narrower domain. A second
+            # row that overflows SQL must roll back the first valid new row.
+            # Only this private extracted test fixture is changed.
+            rollback_rows = [deepcopy(rows[0]), deepcopy(rows[0])]
+            for row in rollback_rows:
+                row["id"] = str(uuid.uuid4())
+            rollback_rows[1]["source_generation"] = 2**31
+            history_path = extracted / "history" / "backup-records.json"
+            original_history = history_path.read_bytes()
+            try:
+                history_path.write_text(json.dumps(rollback_rows), encoding="utf-8")
+                try:
+                    launcher._restore_portable_backup_history(extracted, {"id": project_id})
+                except BackupError as exc:
+                    if "psql" not in str(exc) or "exit code" not in str(exc):
+                        raise RuntimeError("rollback fixture did not reach the real SQL command") from exc
+                else:
+                    raise RuntimeError("SQL error did not reject the invalid history batch")
+                if stored_rows() != first:
+                    raise RuntimeError("SQL error partially committed a history batch")
+            finally:
+                history_path.write_bytes(original_history)
+        print("Production restore CLI passed; encrypted archive, recovery proof, history replay, "
+              "and real SQL-error rollback verified.")
 
 
 if __name__ == "__main__":

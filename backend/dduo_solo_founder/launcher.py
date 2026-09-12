@@ -3181,8 +3181,13 @@ def _restore_drill(extracted: Path, expected_project_id: str) -> dict[str, int]:
     try:
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
+            # The official image uses a socket-only temporary server during
+            # initdb. Wait for the final TCP server before attempting restore.
             ready = subprocess.run(
-                ["docker", "exec", container, "pg_isready", "-U", "dduo"],
+                [
+                    "docker", "exec", container, "pg_isready",
+                    "-h", "127.0.0.1", "-U", "dduo", "-d", "dduo_restore_drill",
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -3308,6 +3313,9 @@ def _wait_for_postgres(project: dict) -> None:
             "-T",
             "postgres",
             "pg_isready",
+            # Ignore the socket-only initialization server in the official image.
+            "-h",
+            "127.0.0.1",
             "-U",
             "dduo_solo_founder",
             "-d",
@@ -3805,10 +3813,14 @@ def _restore_portable_backup_history(extracted: Path, project: dict) -> int:
     csv.writer(stream, lineterminator="\n").writerow(
         [json.dumps(rows, ensure_ascii=False, separators=(",", ":"))]
     )
-    statement = """
-BEGIN;
-CREATE TEMP TABLE dduo_backup_history_import (payload jsonb) ON COMMIT DROP;
-COPY dduo_backup_history_import (payload) FROM STDIN WITH (FORMAT csv);
+    # Keep COPY in its own command: psql 16.15 does not recognize COPY input
+    # after an earlier statement in the same command string. One psql session
+    # and --single-transaction retain atomicity across all three commands.
+    create_statement = (
+        "CREATE TEMP TABLE dduo_backup_history_import (payload jsonb) ON COMMIT DROP"
+    )
+    copy_statement = "COPY dduo_backup_history_import (payload) FROM STDIN WITH (FORMAT csv)"
+    insert_statement = """
 WITH rows AS (
   SELECT jsonb_array_elements(payload) AS item FROM pg_temp.dduo_backup_history_import
 )
@@ -3827,8 +3839,7 @@ SELECT
   NULLIF(item->>'completed_at', '')::timestamptz,
   NULLIF(item->>'verified_at', '')::timestamptz
 FROM rows
-ON CONFLICT (id) DO NOTHING;
-COMMIT;
+ON CONFLICT (id) DO NOTHING
 """.strip()
     _checked_compose(
         project,
@@ -3843,8 +3854,13 @@ COMMIT;
         "--no-psqlrc",
         "--set",
         "ON_ERROR_STOP=1",
+        "--single-transaction",
         "--command",
-        statement,
+        create_statement,
+        "--command",
+        copy_statement,
+        "--command",
+        insert_statement,
         input_text=stream.getvalue(),
     )
     return len(rows)

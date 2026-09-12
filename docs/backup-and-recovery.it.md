@@ -37,6 +37,12 @@ stdin, in una transazione. Non richiede file leggibili dall'utente del server
 nel container né modifiche ai permessi. Un errore interrompe il ripristino;
 ripetere l'importazione non duplica le registrazioni già presenti. Il formato
 cifrato e la compatibilità degli archivi esistenti restano invariati.
+Creazione della tabella temporanea, `COPY` e importazione sono comandi separati
+nella stessa sessione `psql --single-transaction`, con `ON_ERROR_STOP=1`.
+Questo mantiene il rollback integrale ed evita il problema di `psql 16.15`
+con `COPY` preceduto da altre istruzioni nello stesso `--command`.
+Il ripristino attende il server TCP definitivo di PostgreSQL, non il socket
+temporaneo di inizializzazione, prima di importare il database.
 
 <a id="archive-format"></a>
 ## Formato dell'archivio

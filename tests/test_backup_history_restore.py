@@ -26,10 +26,11 @@ def history(tmp_path):
     return path, row
 
 
-def test_history_flows_as_quoted_utf8_data_not_sql_or_files(monkeypatch, tmp_path, history):
+@pytest.mark.parametrize("padding", [0, 100_000])
+def test_history_flows_as_quoted_utf8_data_not_sql_or_files(monkeypatch, tmp_path, history, padding):
     path, row = history
     unusual = "caffè 東京 💾 ' \" \\ \t\r\n\\.\n\\! echo unsafe\n'); DROP TABLE backup_records; --"
-    row.update(archive_name=unusual, manifest={"note": unusual}, error=unusual)
+    row.update(archive_name=unusual, manifest={"note": unusual + "x" * padding}, error=unusual)
     path.write_text(json.dumps([row], ensure_ascii=False), encoding="utf-8")
     path.chmod(0o600)
     before = path.read_bytes()
@@ -46,12 +47,17 @@ def test_history_flows_as_quoted_utf8_data_not_sql_or_files(monkeypatch, tmp_pat
     assert project["id"] == "project-1"
     assert args[:3] == ("exec", "-T", "postgres")
     assert "--no-psqlrc" in args and "ON_ERROR_STOP=1" in args
-    sql = args[-1]
-    assert sql.startswith("BEGIN;") and sql.endswith("COMMIT;")
-    assert "CREATE TEMP TABLE" in sql and "ON COMMIT DROP" in sql
-    assert "FROM STDIN WITH (FORMAT csv)" in sql
-    assert "ON CONFLICT (id) DO NOTHING" in sql
-    assert "pg_read_file" not in sql and unusual not in str(args)
+    assert "--single-transaction" in args
+    statements = [args[index + 1] for index, value in enumerate(args) if value == "--command"]
+    assert len(statements) == 3
+    create, copy, insert = statements
+    assert create == "CREATE TEMP TABLE dduo_backup_history_import (payload jsonb) ON COMMIT DROP"
+    assert copy == "COPY dduo_backup_history_import (payload) FROM STDIN WITH (FORMAT csv)"
+    assert insert.startswith("WITH rows AS (")
+    assert insert.endswith("ON CONFLICT (id) DO NOTHING")
+    # COPY must be its own request on psql 16.15; psql owns BEGIN/COMMIT/ROLLBACK.
+    assert all(";" not in statement for statement in statements)
+    assert "pg_read_file" not in str(args) and unusual not in str(args)
     assert kwargs["capture_output"] is True
     records = list(csv.reader(io.StringIO(kwargs["input_text"], newline="")))
     assert len(records) == 1 and len(records[0]) == 1
@@ -81,15 +87,18 @@ def test_history_validation_still_precedes_io(monkeypatch, tmp_path, history, ch
         launcher._restore_portable_backup_history(tmp_path, {"id": "project-1"})
 
 
-def test_history_import_error_does_not_report_success_or_echo_data(monkeypatch, tmp_path, history, capsys):
+@pytest.mark.parametrize("exit_code", [2, 3])
+def test_history_import_error_does_not_report_success_or_echo_data(
+    monkeypatch, tmp_path, history, capsys, exit_code,
+):
     path, row = history
     secret = "synthetic-private-history-marker"
     row["manifest"] = {"private": secret}
     path.write_text(json.dumps([row]), encoding="utf-8")
     monkeypatch.setattr(launcher, "compose", lambda *a, **kw: SimpleNamespace(
-        returncode=3, stderr="COPY context: " + secret, stdout=secret,
+        returncode=exit_code, stderr="COPY context: " + secret, stdout=secret,
     ))
-    with pytest.raises(BackupError, match="exit code 3") as error:
+    with pytest.raises(BackupError, match=f"exit code {exit_code}") as error:
         launcher._restore_portable_backup_history(tmp_path, {"id": "project-1"})
     assert secret not in str(error.value)
     captured = capsys.readouterr()

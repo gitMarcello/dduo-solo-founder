@@ -4742,7 +4742,8 @@ def test_portable_backup_history_restore_is_validated_and_parameter_free(monkeyp
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert args[:3] == ("exec", "-T", "postgres")
-    assert "FROM STDIN" in args[-1] and "pg_read_file" not in args[-1]
+    assert "COPY dduo_backup_history_import (payload) FROM STDIN WITH (FORMAT csv)" in args
+    assert "--single-transaction" in args and "pg_read_file" not in " ".join(args)
     assert "input_text" in kwargs
     assert not (tmp_path / "backup-records.restore.json").exists()
 
@@ -4987,12 +4988,20 @@ def test_backup_verify_command(monkeypatch, tmp_path):
 
 def test_backup_restore_drill_uses_disposable_database(monkeypatch, tmp_path):
     commands = []
+    readiness = iter([1, 0])
 
     def run(command, **kwargs):
         commands.append(command)
         joined = " ".join(command)
         if "pg_isready" in command:
-            return SimpleNamespace(returncode=0, stdout="ready", stderr="")
+            # The initialization socket can be ready before the final TCP server.
+            assert command[command.index("pg_isready") + 1:] == [
+                "-h", "127.0.0.1", "-U", "dduo", "-d", "dduo_restore_drill",
+            ]
+            assert not any("pg_restore" in previous for previous in commands)
+            return SimpleNamespace(returncode=next(readiness), stdout="", stderr="")
+        if "pg_restore" in command:
+            assert sum("pg_isready" in previous for previous in commands) == 2
         if "select id from projects order by id" in joined:
             return SimpleNamespace(returncode=0, stdout="p1\n", stderr="")
         if "select 'projects', count(*)" in joined:
@@ -5004,10 +5013,33 @@ def test_backup_restore_drill_uses_disposable_database(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
     counts = launcher._restore_drill(tmp_path, "p1")
     assert counts == {"projects": 1, "tasks": 3, "memories": 2, "turns": 4}
     assert commands[0][:3] == ["docker", "run", "--detach"]
     assert any("pg_restore" in command for command in commands)
+    assert commands[-1][:3] == ["docker", "rm", "--force"]
+
+
+def test_backup_restore_drill_readiness_timeout_cleans_up_without_restore(
+    monkeypatch, tmp_path
+):
+    commands = []
+    times = iter([0, 1, 91])
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if "pg_isready" in command:
+            assert command[command.index("-h") + 1] == "127.0.0.1"
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+    with pytest.raises(BackupError, match="did not become ready"):
+        launcher._restore_drill(tmp_path, "p1")
+    assert not any("pg_restore" in command for command in commands)
     assert commands[-1][:3] == ["docker", "rm", "--force"]
 
 
@@ -5067,9 +5099,19 @@ def test_backup_drill_command_verifies_latest_or_selected_archive(monkeypatch, t
 
 def test_postgres_wait_and_checked_compose(monkeypatch):
     results = iter([SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)])
-    monkeypatch.setattr(launcher, "compose", lambda *args: next(results))
+    commands = []
+
+    def compose(*args):
+        commands.append(args)
+        assert args[args.index("pg_isready") + 1:] == (
+            "-h", "127.0.0.1", "-U", "dduo_solo_founder", "-d", "dduo_solo_founder",
+        )
+        return next(results)
+
+    monkeypatch.setattr(launcher, "compose", compose)
     monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
     launcher._wait_for_postgres({"id": "p"})
+    assert len(commands) == 2
     monkeypatch.setattr(launcher, "compose", lambda *args: SimpleNamespace(returncode=4))
     with pytest.raises(BackupError, match="exit code 4"):
         launcher._checked_compose({"id": "p"}, "up")

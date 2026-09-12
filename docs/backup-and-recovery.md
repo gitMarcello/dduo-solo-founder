@@ -35,6 +35,12 @@ transaction. It needs no files readable by the database server user inside
 the container and no permission changes. An import error stops the restore;
 repeating the import does not duplicate existing records. Encryption and
 compatibility with existing archives remain unchanged.
+Temporary-table creation, `COPY`, and insertion are separate commands in one
+`psql --single-transaction` session with `ON_ERROR_STOP=1`. This preserves
+complete rollback and avoids the `psql 16.15` problem with `COPY` following
+other statements in the same `--command` string.
+Restore waits for PostgreSQL's final TCP server, not its temporary initialization
+socket, before importing the database.
 
 ## Archive format
 
