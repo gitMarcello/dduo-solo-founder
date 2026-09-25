@@ -135,14 +135,14 @@ Sleep is asynchronous and is scheduled after any of these signals:
 
 - eight pending turns;
 - twenty minutes of inactivity;
-- a topic boundary recorded with the interactive turn;
+- a topic boundary explicitly recorded by an API client with the turn;
 - a manual dashboard or MCP request.
 
-When a committed turn records a topic boundary, the host queues its sleep job;
-the agent does not need to call `request_sleep` for the same boundary. The model
-may suggest a topic boundary, but the consolidator makes the final semantic
-decision. Idle and threshold scheduling cover conversations that end without
-an explicit signal.
+Native Codex and Claude hooks do not transmit semantic topic-boundary metadata.
+Their routine sleep uses the eight-turn threshold and twenty-minute idle signal.
+An API client that explicitly commits `topic_changed` queues a boundary job;
+the consolidator still makes the final semantic decision. An explicit user
+request can queue a manual job for the selected session.
 
 ## Typed failures and retry
 

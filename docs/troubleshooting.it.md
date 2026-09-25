@@ -36,11 +36,12 @@ blocco tecnico dell'intero agente di sviluppo.
 Il controllo di sicurezza del client è distinto dall'autenticazione dDuo e da
 HTTPS. Una richiesta di conferma non significa, da sola, che la VPS sia insicura.
 
-I normali confini di argomento vengono già programmati dall'host quando il
-turno viene registrato. Un'ulteriore chiamata `request_sleep` a ogni confine
-non serve e può essere bloccata dalla revisione del client. Usare la richiesta
-manuale solo per un consolidamento immediato chiesto esplicitamente o per un
-recupero verificato.
+Gli hook nativi di Codex e Claude non segnalano i confini semantici di
+argomento. Lo sleep ordinario viene programmato dopo otto turni in attesa o
+venti minuti di inattività. Una chiamata aggiuntiva `request_sleep` a ogni
+cambio di argomento può essere bloccata dalla revisione del client. Usare la
+richiesta manuale solo quando l'utente chiede esplicitamente di accodare ora
+il consolidamento o quando serve a un recupero verificato.
 
 `request_sleep` programma l'elaborazione dei turni già salvati nel progetto
 collegato, escludendo quelli fuori registrazione: il POST di programmazione non

@@ -35,6 +35,7 @@ class ModelPrice:
     cache_write_input_usd_per_million: Decimal
     output_usd_per_million: Decimal
     context_window_tokens: int
+    max_output_tokens: int | None = None
     long_context_threshold_input_tokens: int | None = None
     long_context_input_multiplier: Decimal = Decimal(1)
     long_context_output_multiplier: Decimal = Decimal(1)
@@ -82,6 +83,7 @@ def _price(
     cache_write_rate: str,
     output_rate: str,
     context_window_tokens: int,
+    max_output_tokens: int | None = None,
     long_context_threshold_input_tokens: int | None = None,
     long_context_input_multiplier: str = "1",
     long_context_output_multiplier: str = "1",
@@ -95,6 +97,7 @@ def _price(
         cache_write_input_usd_per_million=Decimal(cache_write_rate),
         output_usd_per_million=Decimal(output_rate),
         context_window_tokens=context_window_tokens,
+        max_output_tokens=max_output_tokens,
         long_context_threshold_input_tokens=long_context_threshold_input_tokens,
         long_context_input_multiplier=Decimal(long_context_input_multiplier),
         long_context_output_multiplier=Decimal(long_context_output_multiplier),
@@ -128,6 +131,7 @@ _OPENAI_SOL_6 = _price(
     cache_write_rate="2.50",
     output_rate="10",
     context_window_tokens=1_050_000,
+    max_output_tokens=128_000,
     long_context_threshold_input_tokens=272_000,
     long_context_input_multiplier="2",
     long_context_output_multiplier="1.5",
@@ -141,6 +145,7 @@ _OPENAI_LUNA_6 = _price(
     cache_write_rate="0.125",
     output_rate="0.50",
     context_window_tokens=1_050_000,
+    max_output_tokens=128_000,
     long_context_threshold_input_tokens=272_000,
     long_context_input_multiplier="2",
     long_context_output_multiplier="1.5",
@@ -410,6 +415,8 @@ def api_equivalent_cost(
             return None
         base_input_count = input_count
         context_tokens = input_count + cached_count + cache_write_count + output_count
+    if price.max_output_tokens is not None and output_count > price.max_output_tokens:
+        return None
     if context_tokens > price.context_window_tokens:
         # Do not silently apply a premium or price telemetry that could not be
         # one request under the catalogued model contract.

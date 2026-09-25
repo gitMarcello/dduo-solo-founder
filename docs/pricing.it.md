@@ -27,9 +27,12 @@ Le fonti di riferimento dello snapshot sono
 Sono tariffe versionate usate dalla release, non un listino aggiornato in tempo
 reale.
 
-Per richieste Astra, Sol e Luna oltre **272.000 token di input**, la regola conservata
-raddoppia le tariffe dei componenti input e moltiplica quelle output per 1,5.
-Non applicare invariata la tabella del contesto breve a queste richieste.
+Per richieste Astra, Sol e Luna oltre **272.000 token di input**, la regola
+conservata raddoppia le tariffe dei componenti input e moltiplica quelle output
+per 1,5.
+Non applicare invariata la tabella del contesto breve a queste richieste. Sol e
+Luna hanno un massimo di 128.000 token output per richiesta: quantità maggiori
+restano senza prezzo.
 Fable 5.1 legge la cache a 0,025 volte il prezzo input base; la vecchia voce
 Fable 5 resta distinta. Le scritture cache richiedono una durata attribuibile
 quando la tariffa ne dipende. Durata ignota o contatori incoerenti restano

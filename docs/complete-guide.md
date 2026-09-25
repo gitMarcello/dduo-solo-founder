@@ -118,10 +118,12 @@ an empty successful search; there is no fixed quota of memories to emit.
 One project-owned automatic executor prefers the client established by the
 first supported project chat. Codex uses `gpt-5.6-terra` with medium reasoning.
 Codex and Claude turns share one queue while retaining their source client.
-Batches contain at most eight turns and 40,000 characters. Eight pending turns,
-twenty minutes of inactivity, a topic change or a manual request can trigger
-consolidation. There is no generative API fallback: the other host subscription
-is considered only before model output when the preferred login or executable is
+Batches contain at most eight turns and 40,000 characters. Native Codex and
+Claude hooks trigger routine consolidation after eight pending turns or twenty
+minutes of inactivity. An API client can also record a topic boundary with a
+turn, and a manual request can queue a job. There is no generative API fallback:
+the other host subscription is considered only before model output when the
+preferred login or executable is
 unavailable, never to bypass a rate limit. Rate limits retry; authentication
 failures need one host login. See
 [Troubleshooting](troubleshooting.md).

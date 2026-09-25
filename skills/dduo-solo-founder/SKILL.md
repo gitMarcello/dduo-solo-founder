@@ -285,15 +285,15 @@ unavailable before model output. Never switch subscriptions to bypass a quota,
 timeout or invalid output. A collaborator never needs host subscription
 credentials or a paid generative API key; `source_client` remains provenance.
 A temporary quota waits and retries, while no usable host login is repaired by
-the infrastructure manager. Record a genuine subject boundary with the turn;
-the host schedules its sleep job automatically. Do not call `request_sleep` at
-ordinary topic boundaries or after every task: that adds an unnecessary
-approval-gated request for already queued work. Background sleep batches at
-most eight turns and is scheduled after eight pending turns, twenty minutes of
-inactivity, a declared topic boundary, or an explicit request.
+the infrastructure manager. The native Codex and Claude hooks do not send a
+semantic topic-boundary signal. The host schedules routine sleep after eight
+pending turns or twenty minutes of inactivity; an API client that explicitly
+records `topic_changed` can also schedule a boundary job. Do not call
+`request_sleep` at ordinary topic changes or after every task: such calls add
+approval-gated requests to the routine schedule.
 
-Call `request_sleep` only for an explicit user request for immediate
-consolidation or a verified recovery that requires a manual queue. Pass the
+Call `request_sleep` only when the user explicitly asks to queue
+consolidation now or a verified recovery requires a manual queue. Pass the
 known `dduo_session_id` as `session_id` when targeting this conversation;
 omitting it can select all project sessions.
 The scheduling call does not upload a new transcript: workers consolidate

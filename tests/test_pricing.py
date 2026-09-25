@@ -378,6 +378,7 @@ def test_new_openai_models_use_exact_snapshot_and_long_context_rates(
         price.output_usd_per_million,
     ) == tuple(Decimal(rate) for rate in rates)
     assert price.context_window_tokens == 1_050_000
+    assert price.max_output_tokens == 128_000
     assert price.pricing_version == LATE_SEPTEMBER_API_PRICING_VERSION
 
     usage = dict(provider="codex", model=model, cached_input_tokens=100_000,
@@ -389,6 +390,14 @@ def test_new_openai_models_use_exact_snapshot_and_long_context_rates(
     assert long.pricing_version == LATE_SEPTEMBER_API_PRICING_VERSION
     assert long.canonical_provider == "openai"
     assert long.canonical_model == model
+
+    output_only = dict(provider="codex", model=model, input_tokens=0,
+                       cached_input_tokens=0, cache_write_input_tokens=0)
+    at_output_limit = api_equivalent_cost(output_tokens=128_000, **output_only)
+    above_output_limit = api_equivalent_cost(output_tokens=128_001, **output_only)
+    assert at_output_limit is not None
+    assert at_output_limit.cost_usd == Decimal(rates[3]) * Decimal("0.128")
+    assert above_output_limit is None
 
 
 def test_new_model_entries_do_not_reprice_older_models_or_guess_suffixes():

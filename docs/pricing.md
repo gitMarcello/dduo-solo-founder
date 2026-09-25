@@ -25,9 +25,11 @@ The reference sources recorded for the snapshot are the
 [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing).
 These are versioned rates used by this release, not a live pricing feed.
 
-For Astra, Sol and Luna requests exceeding **272,000 input tokens**, the stored long-context
-rule doubles input-component rates and multiplies output rates by 1.5. Do not
-use the short-context table unchanged for those requests. Fable 5.1 cache reads
+For Astra, Sol and Luna requests exceeding **272,000 input tokens**, the stored
+long-context rule doubles input-component rates and multiplies output rates by
+1.5. Do not use the short-context table unchanged for those requests. Sol and
+Luna have a 128,000-token maximum output per request; larger output counts
+remain unpriced. Fable 5.1 cache reads
 use 0.025 times the base input rate; the older Fable 5 entry remains separate.
 Cache writes require an attributable retention duration when the provider's
 rate depends on it. Unknown duration or inconsistent counters remain unpriced.

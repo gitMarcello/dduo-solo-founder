@@ -35,10 +35,11 @@ not a technical lock on the entire coding agent.
 A native client safety review is separate from dDuo authentication and HTTPS.
 An approval request alone does not mean that the VPS connection is insecure.
 
-Ordinary topic boundaries are already queued by the host when the turn is
-committed. An additional `request_sleep` at each boundary is unnecessary and
-may be blocked by the client's approval review. Use the manual request for an
-explicit immediate consolidation or a verified recovery only.
+Native Codex and Claude hooks do not report semantic topic boundaries. Routine
+sleep is queued after eight pending turns or twenty minutes of inactivity.
+An extra `request_sleep` at each topic change may be blocked by the client's
+approval review. Use the manual request only when the user explicitly asks to
+queue consolidation now or a verified recovery requires it.
 
 `request_sleep` schedules processing of turns already saved in the bound
 project, excluding off-record turns; its scheduling POST does not upload a new

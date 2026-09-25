@@ -137,14 +137,15 @@ Sleep è asincrono e viene pianificato dopo uno di questi segnali:
 
 - otto turni in attesa;
 - venti minuti di inattività;
-- un confine di argomento registrato con il turno interattivo;
+- un confine di argomento registrato esplicitamente con il turno da un client API;
 - una richiesta manuale dalla dashboard o da MCP.
 
-Quando un turno registrato indica un confine di argomento, l'host programma il
-relativo job sleep; l'agente non deve chiamare `request_sleep` per lo stesso
-confine. Il modello può suggerire un confine, ma la decisione semantica finale
-spetta al consolidatore. Inattività e soglia coprono le conversazioni terminate
-senza un segnale esplicito.
+Gli hook nativi di Codex e Claude non trasmettono metadati semantici sui confini
+di argomento. Lo sleep ordinario usa la soglia di otto turni e il segnale di
+venti minuti di inattività. Un client API che registra esplicitamente
+`topic_changed` accoda un job al confine; la decisione semantica finale spetta
+comunque al consolidatore. Una richiesta esplicita dell'utente può accodare
+un job manuale per la sessione scelta.
 
 ## Errori tipizzati e nuovi tentativi
 
