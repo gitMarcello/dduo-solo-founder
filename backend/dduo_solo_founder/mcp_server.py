@@ -345,8 +345,10 @@ TOOL_MODELS = {
         "stored material and relevant project context to the configured Codex/Claude provider "
         "and use configured embeddings (OpenAI by default). Processing may consume subscription "
         "usage and API credits where applicable. This writes "
-        "jobs and may create or revise memories; it is not read-only. Use after a topic "
-        "boundary or a user request; do not retry blindly or bypass a client approval.",
+        "jobs and may create or revise memories; it is not read-only. Use for an "
+        "explicit user request or a verified manual recovery. Ordinary topic "
+        "boundaries are queued automatically; do not retry blindly or bypass "
+        "a client approval.",
         SleepRequest,
     ),
     "list_sleep_jobs": ("List memory consolidation jobs and failures", ActivityInput),

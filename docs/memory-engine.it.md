@@ -2,7 +2,7 @@
 
 # Motore della memoria
 
-Riferimento tecnico per `v0.2.0-beta.2`.
+Riferimento tecnico per `v0.2.0-beta.3`.
 
 Il motore trasforma le conversazioni concluse in una memoria di progetto
 compatta e revisionabile. Non usa la trascrizione come archivio RAG e non chiede
@@ -137,12 +137,14 @@ Sleep è asincrono e viene pianificato dopo uno di questi segnali:
 
 - otto turni in attesa;
 - venti minuti di inattività;
-- un confine di argomento richiesto esplicitamente dal modello interattivo;
+- un confine di argomento registrato con il turno interattivo;
 - una richiesta manuale dalla dashboard o da MCP.
 
-Il modello può suggerire un confine, ma la decisione semantica finale spetta
-al consolidatore. Inattività e soglia coprono le conversazioni terminate senza
-un segnale esplicito.
+Quando un turno registrato indica un confine di argomento, l'host programma il
+relativo job sleep; l'agente non deve chiamare `request_sleep` per lo stesso
+confine. Il modello può suggerire un confine, ma la decisione semantica finale
+spetta al consolidatore. Inattività e soglia coprono le conversazioni terminate
+senza un segnale esplicito.
 
 ## Errori tipizzati e nuovi tentativi
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0-beta.3 — Beta 3
+
+- Topic boundaries recorded with a turn continue to schedule sleep on the
+  project host. The bundled agent instructions and MCP description no longer
+  prompt an additional `request_sleep` call at each boundary, avoiding repeated
+  native approval reviews for an already scheduled job. Explicit immediate
+  requests and verified manual recovery remain available.
+- Add versioned, exact-model API-equivalent price entries for GPT-6 Sol and
+  GPT-6 Luna, including cached input, cache writes and long-context rates.
+  Older model snapshots and persisted observations retain their original rates.
+- Update English and Italian scheduling, approval and pricing guidance.
+
 ## 0.2.0-beta.2 — Beta 2
 
 Reliability and access updates for existing local and VPS projects.

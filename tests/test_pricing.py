@@ -7,6 +7,7 @@ import pytest
 
 from dduo_solo_founder.pricing import (
     API_PRICING_VERSION,
+    LATE_SEPTEMBER_API_PRICING_VERSION,
     MODEL_PRICES,
     api_equivalent_cost,
     embedding_price,
@@ -346,3 +347,52 @@ def test_astra_long_context_prices_the_whole_request_without_double_counting():
     assert long is not None and long.cost_usd == Decimal("4.49002")
     assert long.output_cost_usd == Decimal("0.75")
     assert long.cached_input_cost_usd == Decimal("0.20")
+
+
+@pytest.mark.parametrize(
+    ("model", "rates", "short_cost", "long_cost"),
+    [
+        (
+            "gpt-6-sol",
+            ("2", "0.20", "2.50", "10"),
+            "0.474",
+            "0.898004",
+        ),
+        (
+            "gpt-6-luna",
+            ("0.10", "0.01", "0.125", "0.50"),
+            "0.0237",
+            "0.0449002",
+        ),
+    ],
+)
+def test_new_openai_models_use_exact_snapshot_and_long_context_rates(
+    model, rates, short_cost, long_cost
+):
+    price = resolve_model_price("codex", model)
+    assert price is not None
+    assert (
+        price.input_usd_per_million,
+        price.cached_input_usd_per_million,
+        price.cache_write_input_usd_per_million,
+        price.output_usd_per_million,
+    ) == tuple(Decimal(rate) for rate in rates)
+    assert price.context_window_tokens == 1_050_000
+    assert price.pricing_version == LATE_SEPTEMBER_API_PRICING_VERSION
+
+    usage = dict(provider="codex", model=model, cached_input_tokens=100_000,
+                 cache_write_input_tokens=20_000, output_tokens=10_000)
+    short = api_equivalent_cost(input_tokens=272_000, **usage)
+    long = api_equivalent_cost(input_tokens=272_001, **usage)
+    assert short is not None and short.cost_usd == Decimal(short_cost)
+    assert long is not None and long.cost_usd == Decimal(long_cost)
+    assert long.pricing_version == LATE_SEPTEMBER_API_PRICING_VERSION
+    assert long.canonical_provider == "openai"
+    assert long.canonical_model == model
+
+
+def test_new_model_entries_do_not_reprice_older_models_or_guess_suffixes():
+    assert resolve_model_price("codex", "gpt-5.6-sol").pricing_version == API_PRICING_VERSION
+    assert resolve_model_price("codex", "gpt-5.6-luna").pricing_version == API_PRICING_VERSION
+    assert resolve_model_price("codex", "gpt-6-sol-future") is None
+    assert resolve_model_price("codex", "gpt-6-luna-future") is None

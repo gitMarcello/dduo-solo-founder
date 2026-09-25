@@ -2,7 +2,7 @@
 
 # Memory engine
 
-Technical reference for `v0.2.0-beta.2`.
+Technical reference for `v0.2.0-beta.3`.
 
 The memory engine turns completed conversations into a compact, revisable
 project memory. It is not a transcript RAG and it does not ask the interactive
@@ -135,12 +135,14 @@ Sleep is asynchronous and is scheduled after any of these signals:
 
 - eight pending turns;
 - twenty minutes of inactivity;
-- a topic boundary explicitly requested by the interactive model;
+- a topic boundary recorded with the interactive turn;
 - a manual dashboard or MCP request.
 
-The model may suggest a topic boundary, but the consolidator makes the final
-semantic decision. Idle and threshold scheduling cover conversations that end
-without an explicit signal.
+When a committed turn records a topic boundary, the host queues its sleep job;
+the agent does not need to call `request_sleep` for the same boundary. The model
+may suggest a topic boundary, but the consolidator makes the final semantic
+decision. Idle and threshold scheduling cover conversations that end without
+an explicit signal.
 
 ## Typed failures and retry
 

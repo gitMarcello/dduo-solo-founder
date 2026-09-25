@@ -19,6 +19,7 @@ PICO_USD = Decimal(1_000_000_000_000)
 
 API_PRICING_VERSION = "api-list-prices-2026-08-29"
 SEPTEMBER_API_PRICING_VERSION = "api-list-prices-2026-09-05"
+LATE_SEPTEMBER_API_PRICING_VERSION = "api-list-prices-2026-09-22"
 EMBEDDING_PRICING_VERSION = "openai-text-embedding-3-large-2026-08"
 EMBEDDING_PRICE_PER_MILLION = Decimal("0.13")
 
@@ -116,6 +117,34 @@ _OPENAI_ASTRA = _price(
     long_context_input_multiplier="2",
     long_context_output_multiplier="1.5",
     pricing_version=SEPTEMBER_API_PRICING_VERSION,
+)
+# https://developers.openai.com/api/docs/models/gpt-6-sol
+# https://developers.openai.com/api/docs/models/gpt-6-luna
+_OPENAI_SOL_6 = _price(
+    "openai",
+    "gpt-6-sol",
+    input_rate="2",
+    cached_rate="0.20",
+    cache_write_rate="2.50",
+    output_rate="10",
+    context_window_tokens=1_050_000,
+    long_context_threshold_input_tokens=272_000,
+    long_context_input_multiplier="2",
+    long_context_output_multiplier="1.5",
+    pricing_version=LATE_SEPTEMBER_API_PRICING_VERSION,
+)
+_OPENAI_LUNA_6 = _price(
+    "openai",
+    "gpt-6-luna",
+    input_rate="0.10",
+    cached_rate="0.01",
+    cache_write_rate="0.125",
+    output_rate="0.50",
+    context_window_tokens=1_050_000,
+    long_context_threshold_input_tokens=272_000,
+    long_context_input_multiplier="2",
+    long_context_output_multiplier="1.5",
+    pricing_version=LATE_SEPTEMBER_API_PRICING_VERSION,
 )
 _OPENAI_SOL = _price(
     "openai",
@@ -262,6 +291,8 @@ _CLAUDE_HAIKU_45 = _price(
 MODEL_PRICES: Mapping[tuple[Provider, str], ModelPrice] = MappingProxyType(
     {
         ("openai", "gpt-6-astra"): _OPENAI_ASTRA,
+        ("openai", "gpt-6-sol"): _OPENAI_SOL_6,
+        ("openai", "gpt-6-luna"): _OPENAI_LUNA_6,
         ("openai", "gpt-5.6"): _OPENAI_SOL,
         ("openai", "gpt-5.6-sol"): _OPENAI_SOL,
         ("openai", "gpt-5.6-terra"): _OPENAI_TERRA,
