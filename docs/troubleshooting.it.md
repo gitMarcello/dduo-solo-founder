@@ -3,7 +3,7 @@
 <a id="troubleshooting"></a>
 # Risoluzione dei problemi
 
-Guida per dDuo Solo Founder `0.2.0-beta.2`. Nell'uso normale non dovrebbe
+Guida per dDuo Solo Founder `0.2.0-beta.3`. Nell'uso normale non dovrebbe
 servire una diagnosi tecnica: il lavoro del progetto resta disponibile anche
 quando la memoria locale o remota è temporaneamente irraggiungibile.
 
@@ -35,6 +35,13 @@ blocco tecnico dell'intero agente di sviluppo.
 
 Il controllo di sicurezza del client è distinto dall'autenticazione dDuo e da
 HTTPS. Una richiesta di conferma non significa, da sola, che la VPS sia insicura.
+
+Gli hook nativi di Codex e Claude non segnalano i confini semantici di
+argomento. Lo sleep ordinario viene programmato dopo otto turni in attesa o
+venti minuti di inattività. Una chiamata aggiuntiva `request_sleep` a ogni
+cambio di argomento può essere bloccata dalla revisione del client. Usare la
+richiesta manuale solo quando l'utente chiede esplicitamente di accodare ora
+il consolidamento o quando serve a un recupero verificato.
 
 `request_sleep` programma l'elaborazione dei turni già salvati nel progetto
 collegato, escludendo quelli fuori registrazione: il POST di programmazione non

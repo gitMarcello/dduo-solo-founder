@@ -3267,6 +3267,8 @@ def _stage_stop(
             name for name in ("last_assistant_message", "assistant_response")
             if isinstance(payload.get(name), str)
         ), None)
+        # Native Stop has no trusted semantic-boundary field. Do not fabricate
+        # topic_changed here; routine sleep uses the host threshold/idle policy.
         body = {"assistant_response": payload[response_field]} if response_field else {}
         native_turn = active_external if targets_active else declared
         internal_turn = str(turn_id) if targets_active and turn_id else (

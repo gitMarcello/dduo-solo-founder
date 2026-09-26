@@ -2,7 +2,7 @@
 
 # Troubleshooting
 
-Troubleshooting for dDuo Solo Founder `0.2.0-beta.2`.
+Troubleshooting for dDuo Solo Founder `0.2.0-beta.3`.
 
 Normal use should require no technical diagnosis. dDuo keeps project work
 available when its configured local or remote memory is temporarily unavailable.
@@ -34,6 +34,12 @@ not a technical lock on the entire coding agent.
 
 A native client safety review is separate from dDuo authentication and HTTPS.
 An approval request alone does not mean that the VPS connection is insecure.
+
+Native Codex and Claude hooks do not report semantic topic boundaries. Routine
+sleep is queued after eight pending turns or twenty minutes of inactivity.
+An extra `request_sleep` at each topic change may be blocked by the client's
+approval review. Use the manual request only when the user explicitly asks to
+queue consolidation now or a verified recovery requires it.
 
 `request_sleep` schedules processing of turns already saved in the bound
 project, excluding off-record turns; its scheduling POST does not upload a new

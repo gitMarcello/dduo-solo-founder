@@ -2,7 +2,7 @@
 
 # dDuo Solo Founder: guida completa
 
-Panoramica per `0.2.0-beta.2`. Le guide collegate contengono comandi e procedure
+Panoramica per `0.2.0-beta.3`. Le guide collegate contengono comandi e procedure
 di recupero; il [README](../README.it.md) contiene i prompt da copiare.
 
 ## 1. Il risultato per il founder
@@ -126,10 +126,12 @@ riuscite senza risultati; non esiste una quota fissa di ricordi da consegnare.
 Un esecutore automatico del progetto preferisce il client stabilito dalla prima
 chat supportata. Codex usa `gpt-5.6-terra` con reasoning medio. Turni Codex e
 Claude condividono una sola coda mantenendo il client d'origine.
-I batch contengono massimo otto turni e 40.000 caratteri. Otto turni pendenti,
-venti minuti d'inattività, un cambio argomento o una richiesta manuale possono
-attivare il consolidamento. Non c'è fallback API generativa: l'altro
-abbonamento dell'host è considerato solo prima dell'output quando login o
+I batch contengono massimo otto turni e 40.000 caratteri. Gli hook nativi di
+Codex e Claude attivano il consolidamento ordinario dopo otto turni pendenti o
+venti minuti d'inattività. Un client API può anche registrare un confine di
+argomento con il turno, e una richiesta manuale può accodare un job. Non c'è
+fallback API generativa: l'altro abbonamento dell'host è considerato solo prima
+dell'output quando login o
 eseguibile preferito non sono disponibili, mai per aggirare un limite.
 
 <a id="9-stati-di-memoria-leggibili"></a>

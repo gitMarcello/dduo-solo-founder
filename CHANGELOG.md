@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0-beta.3 — Beta 3
+
+- Native Codex and Claude hooks rely on the host's eight-turn or twenty-minute
+  idle schedule; they do not report semantic topic boundaries. The bundled
+  agent instructions and MCP description no longer prompt an additional
+  `request_sleep` call at each topic change, avoiding repeated native approval
+  reviews. API clients that explicitly record a boundary still queue a boundary
+  job. Explicit requests to queue sleep now and verified manual recovery remain
+  available.
+- Add versioned, exact-model API-equivalent price entries for GPT-6 Sol and
+  GPT-6 Luna, including cached input, cache writes, long-context rates and
+  each model's 128,000-token maximum output.
+  Older model snapshots and persisted observations retain their original rates.
+- Update English and Italian scheduling, approval and pricing guidance.
+
 ## 0.2.0-beta.2 — Beta 2
 
 Reliability and access updates for existing local and VPS projects.
