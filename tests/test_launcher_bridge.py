@@ -12,6 +12,11 @@ from dduo_solo_founder import launcher
 from dduo_solo_founder.bridge_auth import BRIDGE_PROTOCOL_VERSION, project_bridge_token
 
 
+@pytest.fixture(autouse=True)
+def portable_bridge_platform(monkeypatch):
+    monkeypatch.setattr(launcher.sys, "platform", "linux")
+
+
 def test_remote_bridge_checks_both_running_containers_with_private_environment(monkeypatch, tmp_path):
     calls = []
 

@@ -41,6 +41,7 @@ const dataDir = join(home, ".local", "share", "dduo-solo-founder");
 const runtime = join(dataDir, "runtime");
 const configDir = join(home, ".config", "dduo-solo-founder");
 const runtimePointer = join(configDir, "runtime-path");
+const macosAgentFile = join(home, "Library", "LaunchAgents", "it.dduo.solo-founder.agent.plist");
 const hookRuntimePointer = join(configDir, "hook-runtime-bin");
 const claudeStatuslineState = join(configDir, "client-telemetry", "claude-statusline.json");
 const legacyClaudeStatuslineState = join(configDir, "usage-guard", "claude-statusline.json");
@@ -2120,7 +2121,9 @@ function restoreUpgradeSnapshot(snapshotPath) {
 function stopCliBridge() {
   if (!has("dduo-solo-founder")) return;
   step("Stop the authenticated CLI bridge before replacing its runtime");
-  run("dduo-solo-founder", ["bridge-stop"], { optional: true });
+  // A registered launchd job must not keep executing while its runtime changes.
+  const managedMacAgent = process.platform === "darwin" && existsSync(macosAgentFile);
+  run("dduo-solo-founder", ["bridge-stop"], { optional: !managedMacAgent });
 }
 
 function projectRootAvailable() {
@@ -2617,6 +2620,9 @@ function uninstall(plan) {
       || existsSync(family === "codex" ? codexPlugin : claudePlugin)));
   let launcherBin = "";
   if (!keepRuntime && has("uv")) {
+    if (process.platform === "darwin" && existsSync(macosAgentFile)) {
+      run("dduo-solo-founder", ["bridge-uninstall"]);
+    }
     launcherBin = run("uv", ["tool", "dir", "--bin"], { capture: true, optional: true }).trim();
     run("uv", ["tool", "uninstall", "dduo-solo-founder"], { optional: true });
   }
@@ -2853,6 +2859,7 @@ else {
   const clientRecordsBefore = clientRecordSnapshot();
   const codexBefore = captureCodexState();
   const claudeBefore = captureClaudeState();
+  const macosAgentBefore = process.platform === "darwin" && existsSync(macosAgentFile);
   protectConfiguredProjects("update");
   let projectsToRestart = [];
   let runtimeTransaction = null;
@@ -2898,6 +2905,9 @@ else {
   } catch (error) {
     const rollbackErrors = [];
     for (const rollback of [
+      process.platform === "darwin" && !macosAgentBefore && existsSync(macosAgentFile)
+        ? () => run("dduo-solo-founder", ["bridge-uninstall"])
+        : null,
       codexTransaction?.rollback,
       claudeTransaction?.rollback,
       coreTransaction?.rollback,

@@ -2,7 +2,7 @@
 
 # Backup and recovery
 
-Recovery guide for dDuo Solo Founder `0.2.0-beta.3`.
+Recovery guide for dDuo Solo Founder `0.2.0-beta.4`.
 
 ## Recovery contract
 

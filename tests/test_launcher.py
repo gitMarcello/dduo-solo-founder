@@ -31,6 +31,8 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def isolate_launcher_project_secrets(monkeypatch, tmp_path):
+    # Legacy detached-agent tests exercise the portable/Linux path on every OS.
+    monkeypatch.setattr(launcher.sys, "platform", "linux")
     config = tmp_path / "host-config"
     legacy = config / "env"
     retired = config / "env.alpha-retired"

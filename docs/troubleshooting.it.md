@@ -3,9 +3,25 @@
 <a id="troubleshooting"></a>
 # Risoluzione dei problemi
 
-Guida per dDuo Solo Founder `0.2.0-beta.3`. Nell'uso normale non dovrebbe
+Guida per dDuo Solo Founder `0.2.0-beta.4`. Nell'uso normale non dovrebbe
 servire una diagnosi tecnica: il lavoro del progetto resta disponibile anche
 quando la memoria locale o remota è temporaneamente irraggiungibile.
+
+## La memoria locale su macOS si ferma dopo un riavvio
+
+La Beta 4 installa un LaunchAgent dell'utente per l'agente host condiviso.
+Parte dopo il login e riparte se il processo termina inaspettatamente.
+Controlla che sia registrato senza mostrare il token privato:
+
+```bash
+launchctl print "gui/$(id -u)/it.dduo.solo-founder.agent"
+```
+
+Se manca, esegui `dduo-solo-founder start --project-root <PROGETTO>` con il
+runtime Beta 4 installato per registrarlo, poi controlla Docker Desktop e la
+dashboard del progetto. Se la registrazione fallisce, consulta localmente
+`~/.config/dduo-solo-founder/bridge/launchd-error.log`; non incollarne il
+contenuto o credenziali in una segnalazione pubblica.
 
 ## MCP funziona ma le nuove conversazioni non vengono registrate
 
