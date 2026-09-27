@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0-beta.4 — Beta 4
+
+- On macOS, register the shared local host agent as a per-user LaunchAgent.
+  It starts at login and launchd restarts it after an unexpected exit. Existing
+  local projects migrate from the detached agent on the first start after
+  updating; their port and private token remain unchanged.
+- Keep the token out of the LaunchAgent configuration and process arguments.
+  Installation rollback removes a newly created service, and a full native
+  uninstall removes the managed service without deleting project data.
+- Document the login-scoped recovery path for local macOS projects. The Linux
+  VPS systemd user service and Windows local runtime behavior are unchanged.
+
 ## 0.2.0-beta.3 — Beta 3
 
 - Native Codex and Claude hooks rely on the host's eight-turn or twenty-minute

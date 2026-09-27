@@ -3,7 +3,7 @@
 <a id="backup-and-recovery"></a>
 # Backup e ripristino
 
-Guida al ripristino di dDuo Solo Founder `0.2.0-beta.3`.
+Guida al ripristino di dDuo Solo Founder `0.2.0-beta.4`.
 
 <a id="recovery-contract"></a>
 ## Garanzie di ripristino

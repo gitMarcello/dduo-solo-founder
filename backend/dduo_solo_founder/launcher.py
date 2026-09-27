@@ -7,6 +7,7 @@ import hmac
 import io
 import json
 import os
+import plistlib
 import re
 import secrets
 import shlex
@@ -143,6 +144,10 @@ BRIDGE_SYSTEMD_ENV_FILE = BRIDGE_DIR / "agent.env"
 BRIDGE_SYSTEMD_UNIT_NAME = "dduo-solo-founder-agent.service"
 BRIDGE_SYSTEMD_UNIT_FILE = (
     Path.home() / ".config" / "systemd" / "user" / BRIDGE_SYSTEMD_UNIT_NAME
+)
+BRIDGE_MACOS_AGENT_LABEL = "it.dduo.solo-founder.agent"
+BRIDGE_MACOS_AGENT_FILE = (
+    Path.home() / "Library" / "LaunchAgents" / f"{BRIDGE_MACOS_AGENT_LABEL}.plist"
 )
 HOOK_STATE_DIR = Path.home() / ".config" / "dduo-solo-founder" / "hook-state"
 MCP_OBSERVABILITY_DIR = (
@@ -527,6 +532,170 @@ def _systemd_user_command(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _launchctl_command(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["/bin/launchctl", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _macos_agent_target() -> str:
+    return f"gui/{os.getuid()}/{BRIDGE_MACOS_AGENT_LABEL}"
+
+
+def _macos_launch_agent_installed() -> bool:
+    return sys.platform == "darwin" and BRIDGE_MACOS_AGENT_FILE.exists()
+
+
+def _macos_agent_document(executable: str) -> dict:
+    # launchd's plist and process arguments contain paths only. The existing
+    # private token and fixed port are read after login by this shell process.
+    script = "\n".join(
+        (
+            "# dDuo Solo Founder managed macOS agent",
+            "set -eu",
+            f"IFS= read -r DDUO_CLI_BRIDGE_TOKEN < {shlex.quote(str(BRIDGE_TOKEN_FILE))}",
+            f"IFS= read -r DDUO_CLI_BRIDGE_PORT < {shlex.quote(str(BRIDGE_PORT_FILE))}",
+            "export DDUO_CLI_BRIDGE_TOKEN DDUO_CLI_BRIDGE_PORT",
+            f"exec {shlex.quote(executable)} --host 0.0.0.0",
+        )
+    )
+    search_path = os.pathsep.join(
+        (
+            str(Path(executable).parent),
+            str(Path.home() / ".local" / "bin"),
+            str(Path.home() / ".cargo" / "bin"),
+            "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+        )
+    )
+    return {
+        "Label": BRIDGE_MACOS_AGENT_LABEL,
+        "ProgramArguments": ["/bin/sh", "-c", script],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "EnvironmentVariables": {"PATH": search_path},
+        "StandardOutPath": "/dev/null",
+        "StandardErrorPath": str(BRIDGE_DIR / "launchd-error.log"),
+    }
+
+
+def _validate_macos_agent_file() -> None:
+    try:
+        metadata = BRIDGE_MACOS_AGENT_FILE.lstat()
+    except OSError as exc:
+        raise RuntimeError("dDuo macOS agent configuration is invalid") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or metadata.st_mode & 0o022
+    ):
+        raise RuntimeError("dDuo macOS agent configuration is not owned by this installation")
+    try:
+        value = plistlib.loads(BRIDGE_MACOS_AGENT_FILE.read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        raise RuntimeError("dDuo macOS agent configuration is invalid") from exc
+    arguments = value.get("ProgramArguments") if isinstance(value, dict) else None
+    if (
+        not isinstance(arguments, list)
+        or len(arguments) != 3
+        or arguments[:2] != ["/bin/sh", "-c"]
+        or not isinstance(arguments[2], str)
+    ):
+        raise RuntimeError("dDuo macOS agent configuration is not owned by this installation")
+    lines = arguments[2].splitlines()
+    try:
+        command = shlex.split(lines[-1]) if len(lines) == 6 else []
+    except ValueError:
+        command = []
+    if (
+        len(command) != 4
+        or command[0] != "exec"
+        or not Path(command[1]).is_absolute()
+        or value != _macos_agent_document(command[1])
+    ):
+        raise RuntimeError("dDuo macOS agent configuration is not owned by this installation")
+
+
+def _wait_for_macos_bridge(token: str, timeout: float = 20) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if bridge_ready(token):
+            return
+        time.sleep(0.2)
+    raise RuntimeError("dDuo macOS agent did not become ready after launchd start")
+
+
+def _start_macos_bridge(token: str) -> None:
+    _validate_macos_agent_file()
+    target = _macos_agent_target()
+    registered = _launchctl_command("print", target).returncode == 0
+    command = ("kickstart", "-k", target) if registered else (
+        "bootstrap", f"gui/{os.getuid()}", str(BRIDGE_MACOS_AGENT_FILE)
+    )
+    result = _launchctl_command(*command)
+    if result.returncode:
+        raise RuntimeError("dDuo macOS agent could not start through launchd")
+    _wait_for_macos_bridge(token)
+
+
+def _install_macos_bridge(token: str) -> str:
+    with _agent_lock():
+        if _macos_launch_agent_installed():
+            _validate_macos_agent_file()
+            registered = _launchctl_command("print", _macos_agent_target()).returncode == 0
+            healthy = bridge_ready(token)
+            if not registered and healthy:
+                stop_cli_bridge()
+                healthy = False
+            if not registered or not healthy:
+                _start_macos_bridge(token)
+            return token
+        executable = shutil.which("dduo-solo-founder-agent")
+        if not executable or not Path(executable).is_file():
+            raise RuntimeError("the installed dDuo host-agent launcher is unavailable")
+        if BRIDGE_MACOS_AGENT_FILE.is_symlink():
+            raise RuntimeError("dDuo macOS agent configuration is unsafe")
+        stopped = stop_cli_bridge()
+        if stopped or bridge_ready(token):
+            deadline = time.monotonic() + 5
+            while bridge_ready(token) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if bridge_ready(token):
+                raise RuntimeError("previous dDuo host agent did not stop before launchd migration")
+        port = agent_port() or _available_agent_port()
+        _atomic_private_bytes(BRIDGE_PORT_FILE, f"{port}\n".encode())
+        document = _macos_agent_document(executable)
+        _atomic_private_bytes(BRIDGE_MACOS_AGENT_FILE, plistlib.dumps(document))
+        try:
+            result = _launchctl_command(
+                "bootstrap", f"gui/{os.getuid()}", str(BRIDGE_MACOS_AGENT_FILE)
+            )
+            if result.returncode:
+                raise RuntimeError("dDuo macOS agent could not register with launchd")
+            _wait_for_macos_bridge(token)
+        except Exception as exc:
+            target = _macos_agent_target()
+            stopped = _launchctl_command("bootout", target).returncode == 0
+            if stopped or _launchctl_command("print", target).returncode != 0:
+                BRIDGE_MACOS_AGENT_FILE.unlink(missing_ok=True)
+            else:
+                raise RuntimeError(
+                    "dDuo macOS agent rollback could not stop launchd; configuration retained"
+                ) from exc
+            raise
+        return token
+
+
+def _uninstall_macos_bridge() -> None:
+    if not _macos_launch_agent_installed():
+        return
+    _validate_macos_agent_file()
+    stop_cli_bridge()
+    BRIDGE_MACOS_AGENT_FILE.unlink()
+
+
 def _persistent_bridge_unit_installed() -> bool:
     """Return whether this Linux host opted into the reboot-safe VPS agent."""
     return sys.platform.startswith("linux") and BRIDGE_SYSTEMD_UNIT_FILE.is_file()
@@ -683,6 +852,8 @@ def _agent_lock(timeout: float = 12):
 def ensure_cli_bridge() -> str:
     """Start exactly one persistent dDuo host agent without exposing credentials to Docker."""
     token = ensure_bridge_token()
+    if sys.platform == "darwin":
+        return _install_macos_bridge(token)
     if bridge_ready(token):
         return token
     if _persistent_bridge_unit_installed():
@@ -868,6 +1039,15 @@ def get_setup_status(project_root: Path | None = None) -> dict:
 
 def stop_cli_bridge() -> bool:
     unit_stopped = False
+    if _macos_launch_agent_installed():
+        _validate_macos_agent_file()
+        target = _macos_agent_target()
+        if _launchctl_command("print", target).returncode == 0:
+            result = _launchctl_command("bootout", target)
+            if result.returncode:
+                raise RuntimeError("dDuo macOS agent could not be stopped through launchd")
+            unit_stopped = True
+            BRIDGE_PID_FILE.unlink(missing_ok=True)
     if _persistent_bridge_unit_installed():
         result = _systemd_user_command("stop", BRIDGE_SYSTEMD_UNIT_NAME)
         if result.returncode:
@@ -1404,6 +1584,12 @@ def sleep_memory(project_root: Path = typer.Option(Path.cwd(), "--project-root")
 def bridge_stop_command() -> None:
     """Stop the managed bridge before replacing or removing its runtime."""
     typer.echo("dDuo CLI bridge stopped." if stop_cli_bridge() else "dDuo CLI bridge not running.")
+
+
+@app.command("bridge-uninstall", hidden=True)
+def bridge_uninstall_command() -> None:
+    """Remove this user's managed macOS agent during full native uninstall."""
+    _uninstall_macos_bridge()
 
 
 @app.command("memory-status")
