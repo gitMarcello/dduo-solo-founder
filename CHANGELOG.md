@@ -11,6 +11,9 @@
   build to Node 22.23.4 and Nginx 1.30.6 with Brotli 1.2.1 or newer.
 - Update the dashboard development dependencies to patched Vite 6.4.5,
   Vitest 4.1.12 and source-map-js 1.2.2 without changing major versions.
+- Add verified API-equivalent prices for GPT-6.1 Sol and Claude Opus, Sonnet
+  and Haiku 5.5 in the 2026-10-23 snapshot. Apply the new cache discounts and
+  Haiku's full-prompt pricing threshold while preserving historical prices.
 
 ## 0.2.0-beta.4 — Beta 4
 

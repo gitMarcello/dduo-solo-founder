@@ -148,6 +148,21 @@ def test_target_turn_still_scans_prior_cumulative_baseline():
     assert turns[0].input_tokens == 300_000
 
 
+def test_gpt_61_sol_transcript_prices_requests_with_its_own_cache_discount():
+    lines = [line.replace("gpt-5.6-sol", "gpt-6.1-sol").replace("2026-08-30", "2026-10-23")
+             for line in fixture_lines()]
+    short, long = parse_codex_transcript_usage(lines, session_id="session-alpha")
+    # Two separate 250k requests retain short-context rates even though their
+    # turn totals 500k. The later 300k request gets the long-context premium.
+    assert short.api_equivalent_cost_usd == Decimal("0.407")
+    assert long.api_equivalent_cost_usd == Decimal("0.515")
+    costs = [request.api_equivalent_cost() for request in (*short.requests, *long.requests)]
+    assert all(cost.pricing_version == "api-list-prices-2026-10-23" for cost in costs)
+    assert [cost.cached_input_cost_usd for cost in costs] == [
+        Decimal("0.020"), Decimal("0.022"), Decimal("0.040"),
+    ]
+
+
 def test_events_are_stable_content_free_and_match_server_contract():
     first = parse_codex_transcript_usage(
         fixture_lines(), session_id="session-alpha", turn_id="turn-standard"

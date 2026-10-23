@@ -20,6 +20,7 @@ PICO_USD = Decimal(1_000_000_000_000)
 API_PRICING_VERSION = "api-list-prices-2026-08-29"
 SEPTEMBER_API_PRICING_VERSION = "api-list-prices-2026-09-05"
 LATE_SEPTEMBER_API_PRICING_VERSION = "api-list-prices-2026-09-22"
+OCTOBER_API_PRICING_VERSION = "api-list-prices-2026-10-23"
 EMBEDDING_PRICING_VERSION = "openai-text-embedding-3-large-2026-08"
 EMBEDDING_PRICE_PER_MILLION = Decimal("0.13")
 
@@ -121,6 +122,22 @@ _OPENAI_ASTRA = _price(
     long_context_output_multiplier="1.5",
     pricing_version=SEPTEMBER_API_PRICING_VERSION,
 )
+# https://developers.openai.com/api/docs/models/gpt-6.1-sol
+# GPT-6.1 Sol cache reads cost 5% of base input; GPT-6 Sol retains 10%.
+_OPENAI_SOL_61 = _price(
+    "openai",
+    "gpt-6.1-sol",
+    input_rate="2",
+    cached_rate="0.10",
+    cache_write_rate="2.50",
+    output_rate="10",
+    context_window_tokens=1_050_000,
+    max_output_tokens=128_000,
+    long_context_threshold_input_tokens=272_000,
+    long_context_input_multiplier="2",
+    long_context_output_multiplier="1.5",
+    pricing_version=OCTOBER_API_PRICING_VERSION,
+)
 # https://developers.openai.com/api/docs/models/gpt-6-sol
 # https://developers.openai.com/api/docs/models/gpt-6-luna
 _OPENAI_SOL_6 = _price(
@@ -188,6 +205,45 @@ _OPENAI_LUNA = _price(
     long_context_output_multiplier="1.5",
 )
 
+# Current Claude 5.5 prices and limits verified on 2026-10-23.
+# https://platform.claude.com/docs/en/models/overview
+# https://platform.claude.com/docs/en/about-claude/pricing
+_CLAUDE_OPUS_55 = _price(
+    "anthropic",
+    "claude-opus-5-5",
+    input_rate="4",
+    cached_rate="0.20",
+    cache_write_rate="5",
+    output_rate="20",
+    context_window_tokens=1_000_000,
+    max_output_tokens=128_000,
+    pricing_version=OCTOBER_API_PRICING_VERSION,
+)
+_CLAUDE_SONNET_55 = _price(
+    "anthropic",
+    "claude-sonnet-5-5",
+    input_rate="2",
+    cached_rate="0.10",
+    cache_write_rate="2.50",
+    output_rate="10",
+    context_window_tokens=1_000_000,
+    max_output_tokens=128_000,
+    pricing_version=OCTOBER_API_PRICING_VERSION,
+)
+_CLAUDE_HAIKU_55 = _price(
+    "anthropic",
+    "claude-haiku-5-5",
+    input_rate="0.10",
+    cached_rate="0.01",
+    cache_write_rate="0.125",
+    output_rate="0.50",
+    context_window_tokens=1_000_000,
+    max_output_tokens=128_000,
+    long_context_threshold_input_tokens=100_000,
+    long_context_input_multiplier="5",
+    long_context_output_multiplier="5",
+    pricing_version=OCTOBER_API_PRICING_VERSION,
+)
 # Fable 5.1 cache hits are 0.025x base input, not the older 0.1x.
 # https://platform.claude.com/docs/en/about-claude/pricing
 _CLAUDE_FABLE_51 = _price(
@@ -296,6 +352,7 @@ _CLAUDE_HAIKU_45 = _price(
 MODEL_PRICES: Mapping[tuple[Provider, str], ModelPrice] = MappingProxyType(
     {
         ("openai", "gpt-6-astra"): _OPENAI_ASTRA,
+        ("openai", "gpt-6.1-sol"): _OPENAI_SOL_61,
         ("openai", "gpt-6-sol"): _OPENAI_SOL_6,
         ("openai", "gpt-6-luna"): _OPENAI_LUNA_6,
         ("openai", "gpt-5.6"): _OPENAI_SOL,
@@ -304,6 +361,9 @@ MODEL_PRICES: Mapping[tuple[Provider, str], ModelPrice] = MappingProxyType(
         ("openai", "gpt-5.6-luna"): _OPENAI_LUNA,
         ("anthropic", "claude-fable-5"): _CLAUDE_FABLE_5,
         ("anthropic", "claude-fable-5-1"): _CLAUDE_FABLE_51,
+        ("anthropic", "claude-opus-5-5"): _CLAUDE_OPUS_55,
+        ("anthropic", "claude-sonnet-5-5"): _CLAUDE_SONNET_55,
+        ("anthropic", "claude-haiku-5-5"): _CLAUDE_HAIKU_55,
         ("anthropic", "claude-opus-5"): _CLAUDE_OPUS_5,
         ("anthropic", "claude-opus-4-8"): _CLAUDE_OPUS_48,
         ("anthropic", "claude-opus-4-7"): _CLAUDE_OPUS_47,
@@ -406,7 +466,7 @@ def api_equivalent_cost(
         if cached_count + cache_write_count > input_count:
             return None
         base_input_count = input_count - cached_count - cache_write_count
-        context_tokens = input_count + output_count
+        prompt_tokens = input_count
     else:
         # Anthropic's usage envelope exposes these as separate token classes.
         # Cache creation has two prices. The aggregate counter alone cannot tell
@@ -414,17 +474,19 @@ def api_equivalent_cost(
         if cache_write_count and cache_write_ttl is None:
             return None
         base_input_count = input_count
-        context_tokens = input_count + cached_count + cache_write_count + output_count
+        prompt_tokens = input_count + cached_count + cache_write_count
     if price.max_output_tokens is not None and output_count > price.max_output_tokens:
         return None
-    if context_tokens > price.context_window_tokens:
+    if prompt_tokens + output_count > price.context_window_tokens:
         # Do not silently apply a premium or price telemetry that could not be
         # one request under the catalogued model contract.
         return None
 
     uses_long_context_rate = (
         price.long_context_threshold_input_tokens is not None
-        and input_count > price.long_context_threshold_input_tokens
+        # Anthropic cache counters are disjoint input classes, and all count
+        # toward Haiku 5.5's prompt threshold. Output never counts toward it.
+        and prompt_tokens > price.long_context_threshold_input_tokens
     )
     input_multiplier = price.long_context_input_multiplier if uses_long_context_rate else Decimal(1)
     output_multiplier = (

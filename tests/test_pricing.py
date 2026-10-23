@@ -9,6 +9,7 @@ from dduo_solo_founder.pricing import (
     API_PRICING_VERSION,
     LATE_SEPTEMBER_API_PRICING_VERSION,
     MODEL_PRICES,
+    OCTOBER_API_PRICING_VERSION,
     api_equivalent_cost,
     embedding_price,
     resolve_model_price,
@@ -350,24 +351,33 @@ def test_astra_long_context_prices_the_whole_request_without_double_counting():
 
 
 @pytest.mark.parametrize(
-    ("model", "rates", "short_cost", "long_cost"),
+    ("model", "rates", "short_cost", "long_cost", "version"),
     [
+        (
+            "gpt-6.1-sol",
+            ("2", "0.10", "2.50", "10"),
+            "0.464",
+            "0.878004",
+            OCTOBER_API_PRICING_VERSION,
+        ),
         (
             "gpt-6-sol",
             ("2", "0.20", "2.50", "10"),
             "0.474",
             "0.898004",
+            LATE_SEPTEMBER_API_PRICING_VERSION,
         ),
         (
             "gpt-6-luna",
             ("0.10", "0.01", "0.125", "0.50"),
             "0.0237",
             "0.0449002",
+            LATE_SEPTEMBER_API_PRICING_VERSION,
         ),
     ],
 )
 def test_new_openai_models_use_exact_snapshot_and_long_context_rates(
-    model, rates, short_cost, long_cost
+    model, rates, short_cost, long_cost, version
 ):
     price = resolve_model_price("codex", model)
     assert price is not None
@@ -379,7 +389,7 @@ def test_new_openai_models_use_exact_snapshot_and_long_context_rates(
     ) == tuple(Decimal(rate) for rate in rates)
     assert price.context_window_tokens == 1_050_000
     assert price.max_output_tokens == 128_000
-    assert price.pricing_version == LATE_SEPTEMBER_API_PRICING_VERSION
+    assert price.pricing_version == version
 
     usage = dict(provider="codex", model=model, cached_input_tokens=100_000,
                  cache_write_input_tokens=20_000, output_tokens=10_000)
@@ -387,7 +397,7 @@ def test_new_openai_models_use_exact_snapshot_and_long_context_rates(
     long = api_equivalent_cost(input_tokens=272_001, **usage)
     assert short is not None and short.cost_usd == Decimal(short_cost)
     assert long is not None and long.cost_usd == Decimal(long_cost)
-    assert long.pricing_version == LATE_SEPTEMBER_API_PRICING_VERSION
+    assert long.pricing_version == version
     assert long.canonical_provider == "openai"
     assert long.canonical_model == model
 
@@ -405,3 +415,66 @@ def test_new_model_entries_do_not_reprice_older_models_or_guess_suffixes():
     assert resolve_model_price("codex", "gpt-5.6-luna").pricing_version == API_PRICING_VERSION
     assert resolve_model_price("codex", "gpt-6-sol-future") is None
     assert resolve_model_price("codex", "gpt-6-luna-future") is None
+    assert resolve_model_price("codex", "gpt-6-sol").pricing_version == (
+        LATE_SEPTEMBER_API_PRICING_VERSION
+    )
+    assert resolve_model_price("claude", "claude-opus-5").pricing_version == API_PRICING_VERSION
+    assert resolve_model_price("claude", "claude-sonnet-5").pricing_version == API_PRICING_VERSION
+    for provider, model in [("codex", "gpt-6.1-sol"), ("claude", "claude-opus-5-5"),
+                            ("claude", "claude-sonnet-5-5"), ("claude", "claude-haiku-5-5")]:
+        assert resolve_model_price(provider, f"{model}-future") is None
+    assert resolve_model_price("codex", "gpt-6.1") is None
+
+
+@pytest.mark.parametrize(
+    ("model", "short_cost", "one_hour_cost", "output_rate"),
+    [
+        ("claude-opus-5-5", "0.43", "0.49", "20"),
+        ("claude-sonnet-5-5", "0.215", "0.245", "10"),
+        ("claude-haiku-5-5", "0.011", "0.0125", "0.50"),
+    ],
+)
+def test_claude_55_prices_cache_classes_and_enforces_request_limits(
+    model, short_cost, one_hour_cost, output_rate
+):
+    usage = dict(provider="claude", model=model, input_tokens=30_000,
+                 cached_input_tokens=50_000, cache_write_input_tokens=20_000,
+                 output_tokens=10_000, reasoning_tokens=5_000)
+    short = api_equivalent_cost(**usage, cache_write_ttl="5m")
+    one_hour = api_equivalent_cost(**usage, cache_write_ttl="1h")
+    assert short is not None and short.cost_usd == Decimal(short_cost)
+    assert one_hour is not None and one_hour.cost_usd == Decimal(one_hour_cost)
+    assert short.pricing_version == one_hour.pricing_version == OCTOBER_API_PRICING_VERSION
+    assert short.canonical_model == model and short.canonical_provider == "anthropic"
+    assert api_equivalent_cost(**usage) is None  # Unknown cache retention is not a free write.
+
+    output_only = dict(provider="claude", model=model, input_tokens=0,
+                       cached_input_tokens=0, cache_write_input_tokens=0)
+    at_limit = api_equivalent_cost(**output_only, output_tokens=128_000)
+    assert at_limit is not None and at_limit.cost_usd == Decimal(output_rate) * Decimal("0.128")
+    assert api_equivalent_cost(**output_only, output_tokens=128_001) is None
+    assert api_equivalent_cost(**{**usage, "input_tokens": 1_000_000}, cache_write_ttl="5m") is None
+
+
+@pytest.mark.parametrize(
+    ("extra_class", "ttl", "expected"),
+    [
+        ("input_tokens", "5m", "0.0550005"),
+        ("cached_input_tokens", "5m", "0.05500005"),
+        ("cache_write_input_tokens", "5m", "0.055000625"),
+        ("input_tokens", "1h", "0.0625005"),
+        ("cached_input_tokens", "1h", "0.06250005"),
+        ("cache_write_input_tokens", "1h", "0.062501"),
+    ],
+)
+def test_haiku_55_threshold_counts_all_input_classes_but_not_output(extra_class, ttl, expected):
+    usage = dict(provider="claude", model="claude-haiku-5-5", input_tokens=30_000,
+                 cached_input_tokens=50_000, cache_write_input_tokens=20_000,
+                 output_tokens=10_000, cache_write_ttl=ttl)
+    short = api_equivalent_cost(**usage)
+    assert short is not None
+    assert short.cost_usd == Decimal("0.011" if ttl == "5m" else "0.0125")
+    usage[extra_class] += 1
+    long = api_equivalent_cost(**usage)
+    assert long is not None and long.cost_usd == Decimal(expected)
+    assert long.output_cost_usd == Decimal("0.025")
