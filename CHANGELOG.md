@@ -9,6 +9,8 @@
 - Regenerate native hook and MCP commands with the validated installer Node
   path on update, including Windows paths with spaces. Update the dashboard
   build to Node 22.23.4 and Nginx 1.30.6 with Brotli 1.2.1 or newer.
+- Update the dashboard development dependencies to patched Vite 6.4.5,
+  Vitest 4.1.12 and source-map-js 1.2.2 without changing major versions.
 
 ## 0.2.0-beta.4 — Beta 4
 
