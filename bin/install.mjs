@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseChecksumManifest } from "./checksum-manifest.mjs";
 import { commandInvocation } from "./native-command.mjs";
+import { assertInstallerNodeVersion, pinNodeCommands } from "./node-runtime.mjs";
 import { copyPluginFiles as cpSync } from "./copy-plugin-files.mjs";
 import { writeVolumeSnapshot } from "./upgrade-snapshot.mjs";
 import {
@@ -935,20 +936,6 @@ function materializeClaudePlugin(candidate) {
   const manifest = join(candidate, ".claude-plugin", "plugin.json");
   writeFileSync(manifest, `${JSON.stringify(pinNodeCommands(readJsonObject(manifest)), null, 2)}\n`);
   cpSync(join(runtime, "LICENSE"), join(candidate, "LICENSE"));
-}
-
-function pinNodeCommands(value) {
-  if (Array.isArray(value)) return value.map(pinNodeCommands);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
-    if (key === "command" && entry === "node") return [key, process.execPath];
-    if (key === "command" && typeof entry === "string" && entry.startsWith("node ")) {
-      const executable = process.platform === "win32"
-        ? `"${process.execPath}"` : shellSingleQuote(process.execPath);
-      return [key, `${executable}${entry.slice(4)}`];
-    }
-    return [key, pinNodeCommands(entry)];
-  }));
 }
 
 function installClaude() {
@@ -2821,7 +2808,6 @@ function requireSelectedClients() {
 }
 
 function runInstaller() {
-if (Number(process.versions.node.split(".")[0]) < 18) throw new Error("Node.js 18 or newer is required.");
 if (options.dryRun) {
   verifySource();
   const targets = options.only.size ? verificationTargets() : ["claude", "codex"].filter(has);
@@ -2963,6 +2949,9 @@ else {
 }
 }
 
+// Reject vulnerable bootstrap runtimes before creating a lock or changing any
+// installed runtime, hooks, client records, snapshots or project services.
+assertInstallerNodeVersion(process.versions.node, options);
 const installerLockRequired = !options.dryRun && !options.verify;
 const releaseInstallerLock = installerLockRequired ? acquireInstallerLock() : () => {};
 try {

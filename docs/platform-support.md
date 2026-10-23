@@ -4,8 +4,8 @@
 
 Release `0.2.0-beta.4` supports the Codex and Claude Code **CLIs** on native
 macOS and Windows, with local memory or a Linux VPS. Workstations need Node.js
-18+, Git and the selected client; only local memory needs Docker Desktop. The
-server needs Docker/Compose, Git, Node.js 18+ and at least one supported sleep
+22.23.4+, 24.22.1+ or 26.12.1+, Git and the selected client; only local memory needs Docker Desktop. The
+server needs Docker/Compose, Git, Node.js 22.23.4+, 24.22.1+ or 26.12.1+ and at least one supported sleep
 client: Codex CLI 0.150.0+ or Claude Code.
 
 On macOS with local memory, the shared host agent runs as a per-user LaunchAgent.
@@ -96,7 +96,7 @@ Use the [README prompt](../README.md) for the short user-facing request.
 ### 1. Prepare the host
 
 Use a persistent Linux account with systemd user services, Docker/Compose
-access, Git, Node.js 18+ and Codex CLI 0.150.0+ or Claude Code. The dDuo
+access, Git, Node.js 22.23.4+, 24.22.1+ or 26.12.1+ and Codex CLI 0.150.0+ or Claude Code. The dDuo
 installer installs `uv`; it does not install Docker, Node.js, Git or either
 sleep client.
 

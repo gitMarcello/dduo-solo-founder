@@ -1327,6 +1327,29 @@ def test_installer_preserves_codex_config_symlink_while_cleaning_legacy_sections
     assert parsed["plugins"]["dduo-solo-founder@personal"]["enabled"] is True
 
 
+def test_update_replaces_old_absolute_hook_node_paths(tmp_path: Path):
+    env, _, project = _isolated_codex_installer(tmp_path)
+    command = ["node", str(ROOT / "bin/install.mjs"), "--yes", "--only", "codex",
+               "--project-root", str(project)]
+    subprocess.run(command, check=True, capture_output=True, text=True, env=env)
+    manifest = tmp_path / "plugins/dduo-solo-founder/hooks/hooks.json"
+    original = manifest.read_text()
+    data = json.loads(original)
+    for event in data["hooks"].values():
+        event[0]["hooks"][0]["command"] = "'/obsolete/node/24.2.0/bin/node' old-hook.mjs"
+    manifest.write_text(json.dumps(data))
+
+    subprocess.run(command, check=True, capture_output=True, text=True, env=env)
+
+    assert manifest.read_text() == original
+    assert "/obsolete/node" not in manifest.read_text()
+    verification = subprocess.run(
+        ["node", str(ROOT / "bin/install.mjs"), "--verify", "--only", "codex"],
+        capture_output=True, text=True, env=env,
+    )
+    assert verification.returncode == 0, verification.stdout + verification.stderr
+
+
 def test_verify_rejects_a_tampered_codex_package_file(tmp_path: Path):
     if not shutil.which("node"):
         return

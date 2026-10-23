@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Require patched Node.js release lines (22.23.4+, 24.22.1+, 26.12.1+) for
+  installation, update and verification after CVE-2026-111497. Reject older,
+  unsupported and prerelease runtimes before changing installation state;
+  removal and explicit snapshot recovery remain available.
+- Regenerate native hook and MCP commands with the validated installer Node
+  path on update, including Windows paths with spaces. Update the dashboard
+  build to Node 22.23.4 and Nginx 1.30.6 with Brotli 1.2.1 or newer.
+
 ## 0.2.0-beta.4 — Beta 4
 
 - On macOS, register the shared local host agent as a per-user LaunchAgent.

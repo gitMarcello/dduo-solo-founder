@@ -35,7 +35,7 @@ and [security guide](SECURITY.md); no long prompt is needed.
 <details>
 <summary>Prefer the terminal? Installation command</summary>
 
-Run from your project's root. Requires Node.js 18+ and Git:
+Run from your project's root. Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+ and Git:
 
 ```bash
 dduo_install_dir="$(mktemp -d)"
@@ -110,7 +110,7 @@ idea into a plan” or “What have we already decided about authentication?”
 | --- | --- |
 | Shared VPS | Linux with systemd, 1 vCPU, 1 GiB RAM, 2 GiB persistent disk-backed swap, 5 GiB free in Docker storage after swap |
 
-On macOS or native Windows, install Node.js 18+, Git and your supported client;
+On macOS or native Windows, install Node.js 22.23.4+, 24.22.1+ or 26.12.1+, Git and your supported client;
 local memory also uses Docker Desktop. No local hardware minimum is imposed.
 The installer sets up `uv`. The person hosting the memory supplies an OpenAI API key for
 embeddings (semantic search) and **one** supported subscription login: Codex

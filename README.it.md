@@ -35,7 +35,7 @@ e la [guida di sicurezza](SECURITY.it.md) della release: non serve un prompt lun
 <details>
 <summary>Preferisci il terminale? Comando di installazione</summary>
 
-Eseguilo dalla root del tuo progetto. Servono Node.js 18+ e Git:
+Eseguilo dalla root del tuo progetto. Servono Node.js 22.23.4+, 24.22.1+ o 26.12.1+ e Git:
 
 ```bash
 dduo_install_dir="$(mktemp -d)"
@@ -112,7 +112,7 @@ degli utenti?».
 | --- | --- |
 | VPS condivisa | Linux con systemd, 1 vCPU, 1 GiB RAM, 2 GiB di swap persistente su disco, 5 GiB liberi nello storage Docker dopo lo swap |
 
-Su macOS o Windows nativo servono Node.js 18+, Git e il client supportato;
+Su macOS o Windows nativo servono Node.js 22.23.4+, 24.22.1+ o 26.12.1+, Git e il client supportato;
 la memoria locale usa anche Docker Desktop. Non imponiamo requisiti hardware locali.
 L'installer prepara `uv`. Chi ospita la memoria fornisce una chiave API OpenAI
 per gli embedding (ricerca semantica) e **un solo** login in abbonamento

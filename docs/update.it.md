@@ -8,6 +8,31 @@ l'installer protegge i progetti, prepara il runtime affiancato e aggiorna
 l'adapter in transazione. Apre Setup salvo `--no-setup` o `--headless`.
 Codex richiede riavvio completo e nuova chat; Claude solo una nuova sessione.
 
+## Requisito di sicurezza Node.js
+
+Per CVE-2026-111497 serve una release stabile di una di queste linee:
+22.23.4 o successiva nella 22.x, 24.22.1 o successiva nella 24.x, oppure
+26.12.1 o successiva nella 26.x. L'installer rifiuta versioni precedenti e linee
+non elencate, incluse 18.x e 20.x, prima di modificare lo stato locale.
+Disinstallazione e recupero esplicito da snapshot restano disponibili anche
+con un Node vecchio.
+
+Aggiornare prima Node su ciascun computer e host della memoria, poi eseguire
+l'installer dDuo della revisione scelta **con quell'eseguibile corretto**.
+Cambiare solo il collegamento nel PATH non corregge gli hook esistenti: i loro
+comandi contengono il percorso assoluto del Node scelto all'installazione.
+L'aggiornamento dDuo rigenera quei comandi e ricostruisce le immagini locali.
+Verificare l'adapter installato, riavviare Codex o aprire una nuova sessione
+Claude e verificare che l'immagine dashboard attiva contenga Brotli 1.2.1 o
+successivo. Anche una VPS va aggiornata sul relativo host. Questa modifica
+non installa automaticamente Node né cambia il runtime dei client di terzi.
+
+L'API Python della memoria non installa un decoder Brotli e i wrapper JavaScript
+degli hook non decomprimono input. Il requisito elimina comunque la dipendenza
+vulnerabile da quei percorsi. Riferimenti:
+[avviso Node.js](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)
+e [correzione Brotli](https://github.com/google/brotli/releases/tag/v1.2.1).
+
 <a id="agent-plugins-update-boundary"></a>
 ## Confine di aggiornamento Agent Plugins
 

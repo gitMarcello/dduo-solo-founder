@@ -2,7 +2,7 @@
 
 # Installation
 
-On native macOS and Windows, install Node.js 18+, Git and the selected client.
+On native macOS and Windows, install Node.js 22.23.4+, 24.22.1+ or 26.12.1+, Git and the selected client.
 New CLI or VS Code installations also require that family's official standalone
 Codex or Claude Code CLI for package management and durable sleep on the memory
 host. An extension alone is not this prerequisite. Prepare a missing CLI only
@@ -50,7 +50,7 @@ There is no separate onboarding wizard or global local/remote preference:
 Use the release-pinned prompts in [README.md](../README.md) or
 [README.it.md](../README.it.md). These are the single copyable source.
 
-Node.js 18+ and Git are required even for remote collaborators. The installer
+Node.js 22.23.4+, 24.22.1+ or 26.12.1+ and Git are required even for remote collaborators. The installer
 prepares `uv`, verifies the package and installs the selected adapter. On the
 VPS use `node bin/install.mjs --headless --project-root <SERVER-CHECKOUT> --yes`
 for the runtime without client adapters or browser Setup. On a remote
