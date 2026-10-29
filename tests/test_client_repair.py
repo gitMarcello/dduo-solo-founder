@@ -61,7 +61,7 @@ def repair(registration, **overrides):
 
 def assert_unchanged(registration):
     assert (registration.records.read_bytes(), registration.scopes.read_bytes()) == registration.original
-    assert (registration.profile / "config.toml").read_text() == "# existing trusted hooks\n"
+    assert (registration.profile / "config.toml").read_text(encoding="utf-8") == "# existing trusted hooks\n"
 
 
 @pytest.mark.parametrize("surface", ["desktop", "cli", "vscode"])
@@ -73,11 +73,11 @@ def test_repair_replaces_only_selected_registration_after_version_check(registra
     assert "ready" not in value
     assert value["surface"] == surface
     assert len(registration.calls) == 1
-    records = json.loads(registration.records.read_text())
+    records = json.loads(registration.records.read_text(encoding="utf-8"))
     assert records["clients"]["codex"] == {"launcher_path": str(registration.executable)}
     assert records["clients"]["claude"] == json.loads(registration.original[0])["clients"]["claude"]
-    assert json.loads(registration.scopes.read_text()) == json.loads(registration.original[1])
-    assert (registration.profile / "config.toml").read_text() == "# existing trusted hooks\n"
+    assert json.loads(registration.scopes.read_text(encoding="utf-8")) == json.loads(registration.original[1])
+    assert (registration.profile / "config.toml").read_text(encoding="utf-8") == "# existing trusted hooks\n"
 
 
 def test_dry_run_verifies_compatibility_without_writing(registration):
@@ -168,16 +168,16 @@ def test_repair_rolls_back_both_records_if_second_write_fails(registration, monk
 
 def test_profile_is_rechecked_after_version_probe(registration, monkeypatch, tmp_path):
     def change_scope(argv, **kwargs):
-        payload = json.loads(registration.scopes.read_text())
+        payload = json.loads(registration.scopes.read_text(encoding="utf-8"))
         payload["clients"]["codex"]["config_dir"] = str(tmp_path / "concurrent-profile")
-        registration.scopes.write_text(json.dumps(payload))
+        registration.scopes.write_text(json.dumps(payload), encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="codex-cli 0.163.0", stderr="")
 
     monkeypatch.setattr(client_readiness.subprocess, "run", change_scope)
     with pytest.raises(ci.ClientInstallationError, match="another Codex profile"):
         repair(registration)
     assert registration.records.read_bytes() == registration.original[0]
-    assert "concurrent-profile" in registration.scopes.read_text()
+    assert "concurrent-profile" in registration.scopes.read_text(encoding="utf-8")
 
 
 def test_explicit_npm_node_is_used_without_shell_or_path(registration, monkeypatch):
@@ -204,7 +204,7 @@ def test_explicit_npm_node_is_used_without_shell_or_path(registration, monkeypat
     value = repair(registration, executable=shim, node_executable=node)
     assert calls == [[str(node), str(package / "cli.js"), "--version"]]
     assert value["client_node_executable"] == str(node)
-    assert json.loads(registration.records.read_text())["clients"]["codex"]["node_executable"] == str(node)
+    assert json.loads(registration.records.read_text(encoding="utf-8"))["clients"]["codex"]["node_executable"] == str(node)
 
 
 @pytest.mark.parametrize("missing", ["--client-executable", "--surface", "--client-config-dir"])

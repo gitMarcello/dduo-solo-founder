@@ -397,8 +397,8 @@ def smoke(source: Path, *, simulate_runtime: bool) -> None:
             assert repaired["registration_updated"] is True
             assert repaired["hook_authorization"] == "not_checked"
             assert scopes.read_bytes() == before[1]
-            assert json.loads(records.read_text())["clients"]["claude"] == saved["clients"]["claude"]
-            assert (state / "codex-hook-trust").read_text() == "trusted"
+            assert json.loads(records.read_text(encoding="utf-8"))["clients"]["claude"] == saved["clients"]["claude"]
+            assert (state / "codex-hook-trust").read_text(encoding="utf-8") == "trusted"
             run([*installer, "--verify", *adapters])
             print("PASS installed Codex registration diagnosis, dry run and repair", flush=True)
             # The installed Python code must resolve and authenticate the same
