@@ -62,6 +62,16 @@ milione di token input. L'evento conserva consumo riportato dal provider,
 tariffa e versione dello snapshot. Le osservazioni esistenti mantengono il
 prezzo originario e non vengono riscritte quando cambia una voce modello.
 
+Quando un campione interattivo o del sonno non ha un prezzo né una versione
+di listino salvati, la dashboard può stimarne l'equivalente API dal catalogo
+versionato. Calcola ogni richiesta separatamente e include il risultato nei
+totali per modello, operazione, periodo e componente. Mostra quanti campioni
+sono stati valorizzati così e la data del listino. È un confronto retrospettivo
+con quel catalogo, non una fattura o un prezzo accertato al momento della raccolta.
+Il record salvato resta invariato, compresi prezzi già presenti e zeri.
+Contatori mancanti, modelli ignoti e scritture cache senza durata attribuibile
+restano senza prezzo; gli addebiti embedding non usano questo calcolo aggiuntivo.
+
 Modelli sconosciuti, dati assenti e totali invalidi mostrano **Non disponibile**.
 Uno zero misurato resta zero. Le stime calcolate dal client Claude sono
 identificate e possono differire dal listino dDuo o dalla fattura. I contatori

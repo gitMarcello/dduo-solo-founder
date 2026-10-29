@@ -468,8 +468,14 @@ export type PricingCoverage = {
   unavailable: number;
 };
 
+export type CatalogEstimates = {
+  samples: number;
+  pricing_versions: string[];
+};
+
 export type ApiEquivalentMetricBlock = MetricBlock & {
   equivalent_api_cost_usd: string | null;
+  catalog_estimates?: CatalogEstimates;
   equivalent_api_cost_breakdown: {
     uncached_input_usd: string | null;
     cached_input_usd: string | null;
@@ -485,6 +491,7 @@ export type ApiEquivalentMetricBlock = MetricBlock & {
       model: string | null;
       equivalent_api_cost_usd: string | null;
       pricing_coverage: PricingCoverage;
+      catalog_estimates?: CatalogEstimates;
     }
   >;
   timeline: TimelinePoint[];

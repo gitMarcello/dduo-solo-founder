@@ -60,6 +60,16 @@ USD 0.13 per million input tokens. The event preserves provider-reported usage,
 rate and snapshot version. Existing observations retain their original price
 version and are not retroactively rewritten when a model entry changes.
 
+When a past interactive or sleep sample has no stored price or price version,
+the dashboard can now estimate its API equivalent from the versioned catalog.
+It prices each request separately and includes the result in model, operation,
+timeline and component totals. The dashboard identifies these samples and the
+catalog date. This is a retrospective comparison using that catalog, not a
+claim about an invoice or the rate available when the sample was collected.
+The stored observation stays unchanged, including any existing price or zero.
+Missing counters, unknown models and unattributable cache-write durations stay
+unpriced; embedding charges do not use this fallback.
+
 Unknown models, absent usage and invalid totals display **Unavailable**.
 Measured zero remains zero. Claude client-computed estimates are identified as
 such and can differ from dDuo's list-price estimate or a real bill. Cache-hit

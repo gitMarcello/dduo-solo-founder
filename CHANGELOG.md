@@ -2,6 +2,10 @@
 
 ## 0.2.0-beta.5 — Beta 5
 
+- Estimate previously unpriced interactive and sleep usage in dashboard
+  summaries from the versioned catalog, including GPT-6.1 Sol history.
+  Identify the sample count and catalog date while keeping stored observations,
+  existing prices, measured zeros and embedding charges unchanged.
 - Remove the file-count caps from host backup collection, API validation and
   encrypted archive verification. Growing session history remains recoverable;
   size, ownership, project isolation and integrity checks still apply.
