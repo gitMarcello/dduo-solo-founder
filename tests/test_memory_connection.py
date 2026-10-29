@@ -14,6 +14,7 @@ from mcp import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
 from dduo_solo_founder import mcp_server, memory_connection
+from dduo_solo_founder import client_installation
 from dduo_solo_founder.client_binding import ProjectBinding
 from dduo_solo_founder.client_installation import ClientCommand, ClientInstallation, ClientInstallationError
 from dduo_solo_founder.client_readiness import CodexHookStatus
@@ -187,6 +188,52 @@ def test_native_resolution_error_keeps_registration_unknown_without_legacy_probe
     assert value["registered"] is None
     assert value["hooks"]["reason"] == "check_failed"
     assert "private invalid" not in json.dumps(value)
+
+
+def test_missing_recorded_codex_is_actionable_without_probing_another_client(monkeypatch, tmp_path):
+    records, scopes = tmp_path / "executables.json", tmp_path / "scopes.json"
+    records.write_text(json.dumps({"version": 1, "clients": {"codex": {
+        "launcher_path": str(tmp_path / "private-old-build" / "codex.exe"),
+    }}}), encoding="utf-8")
+    scopes.write_text(json.dumps({"version": 1, "clients": {"codex": {
+        "config_dir": str(tmp_path / "profile"),
+    }}}), encoding="utf-8")
+    monkeypatch.setattr(client_installation, "_path_candidate", lambda _family: pytest.fail("PATH fallback"))
+    monkeypatch.setattr(memory_connection, "resolve_client_installation", lambda family:
+                        client_installation.resolve_client_installation(
+                            family, environment={}, record_path=records, scope_path=scopes,
+                        ))
+    value = memory_connection.MemoryConnectionChecks().check("codex", tmp_path, "binding")
+    assert value["reason"] == "client_executable_unavailable"
+    assert value["ready"] is False and value["registered"] is None
+    assert value["hooks"]["reason"] == "client_executable_unavailable"
+    assert value["hooks"]["hook_count"] == 0
+    assert "repair-codex-client" in value["next_action"]
+    assert "permission review" not in value["response_instruction"]
+    assert str(tmp_path) not in json.dumps(value)
+
+
+def test_resolution_failure_changes_and_repair_are_visible_without_waiting_for_cache(monkeypatch, tmp_path):
+    state = SimpleNamespace(error=ClientInstallationError("private invalid record"))
+
+    def resolve(_client):
+        if state.error is not None:
+            raise state.error
+        return ClientInstallation("codex", "desktop", tmp_path, ClientCommand(tmp_path / "codex.exe"))
+
+    monkeypatch.setattr(memory_connection, "resolve_client_installation", resolve)
+    checks = memory_connection.MemoryConnectionChecks()
+    first = checks.check("codex", tmp_path, "binding")
+    assert first["reason"] == "check_failed"
+    state.error = client_installation.ClientExecutableUnavailableError("private path")
+    second = checks.check("codex", tmp_path, "binding")
+    assert second["reason"] == "client_executable_unavailable"
+    assert second["warning_id"] != first["warning_id"]
+    assert checks.check("codex", tmp_path, "binding") == second
+    state.error = None
+    monkeypatch.setattr(memory_connection, "codex_hook_status", lambda *_args, **_kwargs:
+                        _status("authorized", ready=True))
+    assert checks.check("codex", tmp_path, "binding")["ready"] is True
 
 
 def test_native_confirmed_missing_hooks_are_reported_separately_from_probe_failure(monkeypatch, tmp_path):

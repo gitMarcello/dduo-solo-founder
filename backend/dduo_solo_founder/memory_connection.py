@@ -15,7 +15,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from dduo_solo_founder.client_installation import ClientInstallationError, resolve_client_installation
+from dduo_solo_founder.client_installation import (
+    ClientExecutableUnavailableError,
+    ClientInstallationError,
+    resolve_client_installation,
+)
 from dduo_solo_founder.client_readiness import CodexHookStatus, codex_hook_status
 from dduo_solo_founder.connection_health import CONFIGURATION_CHOICE_INSTRUCTION
 
@@ -54,11 +58,15 @@ class MemoryConnectionChecks:
                     "Do not claim capture is verified; keep the existing client workflow."
                 ),
             }
+        resolution_reason = "check_failed"
         try:
             installation = resolve_client_installation(client)
+        except ClientExecutableUnavailableError:
+            installation = None
+            resolution_reason = "client_executable_unavailable"
         except ClientInstallationError:
             installation = None
-        key = (client, str(root.resolve()), binding_id, installation)
+        key = (client, str(root.resolve()), binding_id, installation, resolution_reason)
         with self._condition:
             while key in self._inflight:
                 self._condition.wait()
@@ -71,7 +79,7 @@ class MemoryConnectionChecks:
             status = (
                 codex_hook_status(root, installation=installation)
                 if installation is not None
-                else CodexHookStatus(False, "check_failed", 0, [])
+                else CodexHookStatus(False, resolution_reason, 0, [])
             )
             signature = (
                 status.ready, status.reason, status.hook_count,
@@ -121,7 +129,12 @@ class MemoryConnectionChecks:
                 consent = status.reason in {
                     "authorization_required", "reauthorization_required"
                 }
+                executable_unavailable = status.reason == "client_executable_unavailable"
                 value["message"] = (
+                    "The recorded Codex executable or its recorded Node dependency is unavailable. "
+                    "dDuo could not check native hooks; their authorization is unknown."
+                    if executable_unavailable
+                    else
                     "dDuo needs your authorization. Automatic conversation capture is inactive; "
                     "saved information and Work tools remain available."
                     if consent
@@ -129,6 +142,12 @@ class MemoryConnectionChecks:
                     "Do not assume new turns are being recorded."
                 )
                 value["next_action"] = (
+                    "Repair the registration with dduo-solo-founder repair-codex-client, "
+                    "providing --client-executable, --surface, and --client-config-dir explicitly. "
+                    "Keep the managed profile; use --dry-run to verify before saving. "
+                    "Then call check_memory_connection again."
+                    if executable_unavailable
+                    else
                     "Use the current official Codex client's native hook review, if offered, "
                     "to review and authorize dDuo Solo Founder. " + reload_instruction
                     if consent
@@ -138,7 +157,12 @@ class MemoryConnectionChecks:
                 )
                 value["response_instruction"] = (
                     CONFIGURATION_CHOICE_INSTRUCTION
-                    + "Offer to guide the user through the Codex permission review in next_action. If fixing, wait for "
+                    + (
+                        "Offer to guide the user through the explicit client registration repair in next_action. "
+                        if executable_unavailable
+                        else "Offer to guide the user through the Codex permission review in next_action. "
+                    )
+                    + "If fixing, wait for "
                     "'done' then call check_memory_connection. Only after explicit consent to "
                     "continue, pass this warning_id as memory_warning_ack on subsequent dDuo "
                     "calls in THIS chat. Do not repeat an accepted unchanged warning. Never "

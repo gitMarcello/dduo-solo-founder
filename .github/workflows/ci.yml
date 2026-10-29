@@ -73,6 +73,7 @@ jobs:
           tests/test_cli_bridge.py::test_real_bridge_health_accepts_only_exact_project_token_and_preserves_master
           tests/test_client_binding.py
           tests/test_client_installation.py
+          tests/test_client_repair.py
           tests/test_client_http.py
           tests/test_dashboard_access.py
           tests/test_link_privacy.py

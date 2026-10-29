@@ -2,7 +2,7 @@
 
 # Platform support and first VPS installation
 
-Release `0.2.0-beta.4` supports the Codex and Claude Code **CLIs** on native
+Release `0.2.0-beta.5` supports the Codex and Claude Code **CLIs** on native
 macOS and Windows, with local memory or a Linux VPS. Workstations need Node.js
 22.23.4+, 24.22.1+ or 26.12.1+, Git and the selected client; only local memory needs Docker Desktop. The
 server needs Docker/Compose, Git, Node.js 22.23.4+, 24.22.1+ or 26.12.1+ and at least one supported sleep
@@ -119,7 +119,7 @@ Run from the authorized project checkout on the VPS:
 
 ```bash
 dduo_install_dir="$(mktemp -d)"
-git clone --depth 1 --branch v0.2.0-beta.4 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
+git clone --depth 1 --branch v0.2.0-beta.5 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
 node "$dduo_install_dir/bin/install.mjs" --headless --project-root "$PWD" --yes
 ```
 

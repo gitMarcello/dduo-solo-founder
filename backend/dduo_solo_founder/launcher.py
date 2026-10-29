@@ -46,6 +46,7 @@ from dduo_solo_founder.backup_config import (
 )
 from dduo_solo_founder.bridge_auth import BRIDGE_PROTOCOL_VERSION, project_bridge_token
 from dduo_solo_founder.client_readiness import (
+    CodexVersionError,
     client_readiness as inspect_client_readiness,
     detached_cli_environment,
     resolve_codex_executable,
@@ -67,6 +68,7 @@ from dduo_solo_founder.client_installation import (
     resolve_client_installation,
 )
 from dduo_solo_founder.client_http import ProjectHttpClient
+from dduo_solo_founder.client_repair import repair_codex_client
 from dduo_solo_founder.dashboard_access import validate_browser_link, with_dashboard_access_token
 from dduo_solo_founder.invitations import (
     InvitationPayloadError,
@@ -1286,6 +1288,28 @@ def login_claude(
     typer.echo(json.dumps({"ready": status.ready, "provider": "claude"}))
     if not status.ready:
         raise typer.Exit(8)
+
+
+@app.command("repair-codex-client")
+def repair_codex_client_command(
+    client_executable: Path = typer.Option(..., "--client-executable"),
+    surface: str = typer.Option(..., "--surface"),
+    client_config_dir: Path = typer.Option(..., "--client-config-dir"),
+    client_node_executable: Path | None = typer.Option(None, "--client-node-executable"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Repair Codex's recorded executable without changing profile or hook trust."""
+    try:
+        result = repair_codex_client(
+            executable=client_executable,
+            surface=surface,
+            config_dir=client_config_dir,
+            node_executable=client_node_executable,
+            dry_run=dry_run,
+        )
+    except (ClientInstallationError, CodexVersionError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("client-readiness")
