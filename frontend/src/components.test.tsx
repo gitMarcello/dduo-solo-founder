@@ -582,6 +582,48 @@ describe('components', () => {
     expect(onFilters).toHaveBeenCalledWith({ actor: 'system', category: '', status: '' });
   });
 
+  it('identifies historical catalog estimates in the total and model card', () => {
+    const estimates = { samples: 12, pricing_versions: ['api-list-prices-2026-10-23'] };
+    const summary: ObservabilitySummary = {
+      ...observability,
+      agent_usage: {
+        ...observability.agent_usage,
+        equivalent_api_cost_usd: '1.25',
+        catalog_estimates: estimates,
+        by_provider_model: observability.agent_usage.by_provider_model.map((item) => ({
+          ...item,
+          provider: 'codex',
+          model: 'gpt-6.1-sol',
+          equivalent_api_cost_usd: '1.25',
+          catalog_estimates: estimates,
+        })),
+      },
+    };
+    render(
+      <ObservabilityView
+        projectId="p1"
+        summary={summary}
+        events={[]}
+        range="7d"
+        onRange={vi.fn()}
+        filters={{ category: '', status: '' }}
+        onFilters={vi.fn()}
+        loading={false}
+        eventsLoading={false}
+        error=""
+        nextCursor={null}
+        onLoadMore={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.getByText('gpt-6.1-sol')).toBeInTheDocument();
+    expect(screen.getByText('$1.2500 API equivalent')).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        'Includes 12 previously unpriced samples estimated using catalog 2026-10-23.',
+      ),
+    ).toHaveLength(2);
+  });
+
   it('keeps a positive sub-microdollar API equivalent visible', () => {
     const summary: ObservabilitySummary = {
       ...observability,

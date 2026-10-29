@@ -44,7 +44,6 @@ OPTIONAL_FILES = V1_OPTIONAL_FILES
 _SAFE_MEMBER = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 _CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)$")
 _BACKUP_TIMESTAMP = re.compile(r"-(\d{8}T\d{6}Z)-[0-9a-f]{8}\.dduobackup$")
-MAX_ARCHIVE_MEMBERS = 1_024
 PRIVATE_PREFIXES = ("secrets/", "binding/", "host-state/")
 V2_FIXED_OPTIONAL_FILES = frozenset(
     {
@@ -376,8 +375,6 @@ def _read_checksums(value: str) -> dict[str, str]:
 
 def _validate_members(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     members = archive.infolist()
-    if len(members) > MAX_ARCHIVE_MEMBERS:
-        raise BackupError("backup contains too many files")
     names = [item.filename for item in members]
     if len(names) != len(set(names)):
         raise BackupError("backup contains duplicate files")

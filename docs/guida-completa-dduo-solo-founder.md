@@ -2,7 +2,7 @@
 
 # dDuo Solo Founder: guida completa
 
-Panoramica per `0.2.0-beta.4`. Le guide collegate contengono comandi e procedure
+Panoramica per `0.2.0-beta.5`. Le guide collegate contengono comandi e procedure
 di recupero; il [README](../README.it.md) contiene i prompt da copiare.
 
 ## 1. Il risultato per il founder
@@ -18,7 +18,7 @@ Non inizializzare una memoria sostitutiva. Vedere [Installazione](installation.i
 
 ## 2. Cosa viene chiesto davvero
 
-Su macOS e Windows servono Node.js 18+, Git e il client scelto; per la memoria
+Su macOS e Windows servono Node.js 22.23.4+, 24.22.1+ o 26.12.1+, Git e il client scelto; per la memoria
 locale serve anche Docker Desktop. Il gestore fornisce chiave OpenAI embeddings
 e un solo login in abbonamento per consolidare: Codex oppure Claude. La prima
 chat supportata del progetto stabilisce la preferenza; l'host la verifica prima

@@ -2,7 +2,7 @@
 
 # Backup and recovery
 
-Recovery guide for dDuo Solo Founder `0.2.0-beta.4`.
+Recovery guide for dDuo Solo Founder `0.2.0-beta.5`.
 
 ## Recovery contract
 
@@ -91,6 +91,11 @@ Readers continue to accept schema v1 archives. New backups are v2 and are not
 published unless the authenticated project host agent returns the bounded,
 project-filtered supplement needed for integral recovery. A missing agent does
 not silently produce a backup labelled complete.
+
+The supplement and encrypted archive have no file-count cap. Session state
+can accumulate without hitting a fixed number of files; byte-size bounds,
+ownership checks and project filtering still apply. No session state is
+discarded to make a backup fit.
 
 After writing an archive, the runtime decrypts it, validates the complete ZIP
 inventory, rejects unsafe paths, links, duplicate members, unexpected host
@@ -193,6 +198,8 @@ volumes and reports both semantic projections as rebuildable from PostgreSQL.
 The web UI provides the manager with current status, direct download of retained
 verified archives, and a secondary manual creation action. A failed backup
 remains visible in activity and status without marking the project clean.
+The latest retained, verified archive remains available even after a long
+series of failed attempts; its lookup covers the full backup history.
 
 Before an update or uninstall, the installer reads the private backup registry
 and runs the equivalent of this command once for every registered project that
@@ -383,6 +390,11 @@ lifetime.
 
 ## Failure behavior
 
+- On releases before Beta 5, `backup supplement contains too many files` or
+  `backup contains too many files` indicates the old file-count caps. Update
+  both the host agent and project services; keep the session files and existing
+  archives. If the failing pre-update backup blocks installation, use the
+  explicit update exception described above.
 - Destination unavailable: no archive is written; the project remains dirty.
 - Wrong key or altered ciphertext: authentication fails before extraction.
 - Invalid ZIP inventory, path, checksum, or size: verification fails.

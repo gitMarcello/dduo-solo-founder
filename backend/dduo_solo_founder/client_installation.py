@@ -38,6 +38,10 @@ class ClientInstallationError(RuntimeError):
     """One selected client installation cannot safely be used."""
 
 
+class ClientExecutableUnavailableError(ClientInstallationError):
+    """A valid recorded client or Node path is no longer executable."""
+
+
 @dataclass(frozen=True)
 class ClientCommand:
     executable: Path
@@ -158,9 +162,14 @@ def _record_path(entry: dict, field: str, *, label: str) -> Path | None:
     if not isinstance(value, str):
         raise ClientInstallationError(f"saved {label} is invalid; run setup repair")
     try:
-        return _normal_path(value, label=label, require_exists=True)
+        path = _normal_path(value, label=label, require_exists=False)
     except ClientInstallationError as error:
         raise ClientInstallationError(f"saved {label} is invalid; run setup repair") from error
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ClientExecutableUnavailableError(
+            f"saved {label} is unavailable; run setup repair"
+        )
+    return path
 
 
 def default_config_dir(family: ClientFamily, environment: dict[str, str] | None = None) -> Path:

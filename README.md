@@ -25,7 +25,7 @@ Open **the project you want to work on** in Codex or Claude Code and paste:
 
 ```text
 Install this plugin in this project and guide me through setup:
-https://github.com/gitMarcello/dduo-solo-founder/tree/v0.2.0-beta.4
+https://github.com/gitMarcello/dduo-solo-founder/tree/v0.2.0-beta.5
 ```
 
 The assistant follows this release's
@@ -35,11 +35,11 @@ and [security guide](SECURITY.md); no long prompt is needed.
 <details>
 <summary>Prefer the terminal? Installation command</summary>
 
-Run from your project's root. Requires Node.js 18+ and Git:
+Run from your project's root. Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+ and Git:
 
 ```bash
 dduo_install_dir="$(mktemp -d)"
-git clone --depth 1 --branch v0.2.0-beta.4 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
+git clone --depth 1 --branch v0.2.0-beta.5 https://github.com/gitMarcello/dduo-solo-founder.git "$dduo_install_dir"
 "$dduo_install_dir/install.sh" --only codex --project-root "$PWD" --yes
 # Use --only claude instead when installing for Claude Code.
 ```
@@ -48,7 +48,7 @@ On native Windows, use PowerShell:
 
 ```powershell
 $dduoInstallDir = Join-Path ([IO.Path]::GetTempPath()) ("dduo-" + [guid]::NewGuid())
-git clone --depth 1 --branch v0.2.0-beta.4 https://github.com/gitMarcello/dduo-solo-founder.git $dduoInstallDir
+git clone --depth 1 --branch v0.2.0-beta.5 https://github.com/gitMarcello/dduo-solo-founder.git $dduoInstallDir
 node (Join-Path $dduoInstallDir 'bin/install.mjs') --only codex --project-root (Get-Location).Path --yes
 ```
 
@@ -66,7 +66,7 @@ Docker. The assistant follows the [headless VPS runbook](docs/platform-support.m
 Set up this project's first dDuo memory directly on a VPS and connect this
 computer remotely. Preserve any existing memory, check the server requirements
 and follow the procedure here. Ask only for missing details and decisions:
-https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.4/docs/platform-support.md
+https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.5/docs/platform-support.md
 ```
 
 ### Move an existing dDuo project to a VPS
@@ -79,8 +79,8 @@ infrastructure credentials, enable and verify off-record capture. Verify a
 recovery backup, keep credentials private and maintain one writable memory.
 Follow this release's transfer and recovery procedures; ask only for missing
 details and necessary decisions:
-https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.4/docs/remote-teams.md
-https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.4/docs/backup-and-recovery.md
+https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.5/docs/remote-teams.md
+https://github.com/gitMarcello/dduo-solo-founder/blob/v0.2.0-beta.5/docs/backup-and-recovery.md
 ```
 
 ### Join a project someone already shared
@@ -110,7 +110,7 @@ idea into a plan” or “What have we already decided about authentication?”
 | --- | --- |
 | Shared VPS | Linux with systemd, 1 vCPU, 1 GiB RAM, 2 GiB persistent disk-backed swap, 5 GiB free in Docker storage after swap |
 
-On macOS or native Windows, install Node.js 18+, Git and your supported client;
+On macOS or native Windows, install Node.js 22.23.4+, 24.22.1+ or 26.12.1+, Git and your supported client;
 local memory also uses Docker Desktop. No local hardware minimum is imposed.
 The installer sets up `uv`. The person hosting the memory supplies an OpenAI API key for
 embeddings (semantic search) and **one** supported subscription login: Codex
@@ -142,7 +142,7 @@ keeps its own complete stack and therefore needs additional RAM and storage.
 
 ## Project status
 
-[v0.2.0-beta.4](https://github.com/gitMarcello/dduo-solo-founder/releases/tag/v0.2.0-beta.4)
+[v0.2.0-beta.5](https://github.com/gitMarcello/dduo-solo-founder/releases/tag/v0.2.0-beta.5)
 is a Beta for invited developers. It uses the Agent Plugins 1.0 format, with
 native CLI adapters for Codex and Claude Code on macOS and Windows, or a Linux
 memory host. Official VS Code integrations use the same adapter, but need a

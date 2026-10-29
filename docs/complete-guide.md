@@ -2,7 +2,7 @@
 
 # dDuo Solo Founder: complete guide
 
-Overview for `0.2.0-beta.4`. Use the linked runbooks for exact commands and
+Overview for `0.2.0-beta.5`. Use the linked runbooks for exact commands and
 recovery procedures; use the [README](../README.md) for copyable setup prompts.
 
 ## 1. What the founder gets
@@ -19,7 +19,7 @@ Never initialize a replacement for an existing project. See
 
 ## 2. Setup and credentials
 
-macOS and Windows need Node.js 18+, Git and the selected client; local memory
+macOS and Windows need Node.js 22.23.4+, 24.22.1+ or 26.12.1+, Git and the selected client; local memory
 also needs Docker Desktop. The host supplies an OpenAI embeddings key and one
 official subscription login for consolidation: Codex or Claude. The first
 supported project chat establishes the preference; the host verifies it before

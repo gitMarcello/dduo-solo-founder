@@ -1431,6 +1431,128 @@ async def test_client_event_batch_is_strict_idempotent_and_prices_at_occurrence_
     }
 
 
+@pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        ("codex", "gpt-6.1-sol", "0.002620000000"),
+        ("claude", "claude-opus-5-5", "0.006040000000"),
+        ("claude", "claude-sonnet-5-5", "0.003020000000"),
+        ("claude", "claude-haiku-5-5", "0.000152000000"),
+    ],
+)
+async def test_october_model_prices_reach_dashboard_without_repricing_history(
+    api_client, db_factory, provider, model, expected
+):
+    client, _ = api_client
+    project = await create_project(client)
+    async with db_factory() as db:
+        # The summary may estimate a formerly unknown price, but it must not
+        # rewrite the observation that was collected without a catalog entry.
+        await record(db, Observation(
+            project_id=project["id"], idempotency_key="historical-unpriced",
+            category="agent_usage", operation="agent.turn_usage",
+            provider=provider, model=model, measurement_source="provider_reported",
+            input_tokens=1_000, cached_input_tokens=200,
+            cache_write_input_tokens=0, output_tokens=100,
+        ))
+        await db.commit()
+
+    response = await client.post(
+        f"/projects/{project['id']}/observability/client-events/batch",
+        json={"items": [{
+            "event_id": "agent.current-pricing", "provider": provider, "model": model,
+            "measurement_source": "provider_reported", "input_tokens": 1_000,
+            "cached_input_tokens": 200, "cache_write_input_tokens": 0,
+            "output_tokens": 100, "occurred_at": "2026-10-23T12:00:00+00:00",
+        }]},
+    )
+    assert response.status_code == 202 and response.json() == {"accepted": 1}
+    summary = (await client.get(
+        f"/projects/{project['id']}/observability/summary?range=all"
+    )).json()["agent_usage"]
+    assert Decimal(summary["equivalent_api_cost_usd"]) == Decimal(expected) * 2
+    assert summary["pricing_coverage"] == {"priced": 2, "unavailable": 0}
+    assert summary["catalog_estimates"] == {
+        "samples": 1, "pricing_versions": ["api-list-prices-2026-10-23"],
+    }
+    assert summary["by_provider_model"][0]["model"] == model
+    assert summary["by_provider_model"][0]["catalog_estimates"] == summary["catalog_estimates"]
+    assert sum(Decimal(item["equivalent_api_cost_usd"]) for item in summary["timeline"]) == (
+        Decimal(expected) * 2
+    )
+    assert sum(Decimal(item["equivalent_api_cost_usd"]) for item in summary["by_operation"]) == (
+        Decimal(expected) * 2
+    )
+    assert summary["equivalent_api_cost_breakdown"]["priced"] == 2
+
+    async with db_factory() as db:
+        rows = (await db.scalars(select(ObservabilityEvent).where(
+            ObservabilityEvent.project_id == project["id"],
+            ObservabilityEvent.category == "agent_usage",
+        ))).all()
+    by_key = {row.idempotency_key: row for row in rows}
+    current = by_key["client:agent.current-pricing"]
+    assert current.cost_usd == Decimal(expected)
+    assert current.pricing_version == "api-list-prices-2026-10-23"
+    assert by_key["historical-unpriced"].cost_usd is None
+    assert by_key["historical-unpriced"].pricing_version is None
+
+
+@pytest.mark.parametrize("category, block", [("agent_usage", "agent_usage"), ("sleep_model", "sleep")])
+async def test_summary_catalog_estimates_preserve_prices_and_reject_incomplete_usage(
+    api_client, db_factory, category, block,
+):
+    client, _ = api_client
+    project = await create_project(client)
+    samples = [
+        ("missing", {}),
+        ("stored", {"cost_usd": Decimal("7.25"), "pricing_version": "original"}),
+        ("zero", {"cost_usd": Decimal(0), "pricing_version": "original-zero"}),
+        ("frozen", {"pricing_version": "unknown-historical-rate"}),
+        ("incomplete", {"cached_input_tokens": None}),
+        ("inconsistent", {"cached_input_tokens": 1_001}),
+        ("unknown", {"model": "gpt-6.1-sol-unknown"}),
+        ("unmeasured", {"measurement_source": "unavailable"}),
+        ("unattributable", {"details": {"cost_kind": "subscription_not_attributable"}}),
+        ("unknown-ttl", {"provider": "claude", "model": "claude-opus-5-5",
+                         "cache_write_input_tokens": 100}),
+    ]
+    async with db_factory() as db:
+        for key, overrides in samples:
+            await record(db, Observation(**{
+                "project_id": project["id"], "idempotency_key": key,
+                "category": category, "operation": "test.usage",
+                "provider": "codex", "model": "gpt-6.1-sol",
+                "measurement_source": "provider_reported",
+                "input_tokens": 1_000, "cached_input_tokens": 200,
+                "cache_write_input_tokens": 0, "output_tokens": 100,
+                **overrides,
+            }))
+        await db.commit()
+
+    for _ in range(2):
+        response = await client.get(f"/projects/{project['id']}/observability/summary?range=all")
+        assert response.status_code == 200
+        summary = response.json()[block]
+        assert Decimal(summary["equivalent_api_cost_usd"]) == Decimal("7.25262")
+        assert summary["pricing_coverage"] == {"priced": 3, "unavailable": 7}
+        assert summary["catalog_estimates"]["samples"] == 1
+        assert summary["equivalent_api_cost_breakdown"]["priced"] == 1
+
+    async with db_factory() as db:
+        rows = (await db.scalars(select(ObservabilityEvent).where(
+            ObservabilityEvent.project_id == project["id"],
+            ObservabilityEvent.category == category,
+        ))).all()
+        assert len(rows) == len(samples)
+        by_key = {row.idempotency_key: row for row in rows}
+        assert by_key["stored"].cost_usd == Decimal("7.25")
+        assert by_key["zero"].cost_usd == Decimal(0)
+        assert by_key["missing"].cost_usd is None
+        assert by_key["missing"].pricing_version is None
+        assert by_key["missing"].details == {}
+
+
 async def test_client_event_batch_drains_retired_guard_items_without_persisting_them(
     api_client, db_factory
 ):

@@ -3,7 +3,7 @@
 <a id="troubleshooting"></a>
 # Risoluzione dei problemi
 
-Guida per dDuo Solo Founder `0.2.0-beta.4`. Nell'uso normale non dovrebbe
+Guida per dDuo Solo Founder `0.2.0-beta.5`. Nell'uso normale non dovrebbe
 servire una diagnosi tecnica: il lavoro del progetto resta disponibile anche
 quando la memoria locale o remota è temporaneamente irraggiungibile.
 
@@ -18,10 +18,55 @@ launchctl print "gui/$(id -u)/it.dduo.solo-founder.agent"
 ```
 
 Se manca, esegui `dduo-solo-founder start --project-root <PROGETTO>` con il
-runtime Beta 4 installato per registrarlo, poi controlla Docker Desktop e la
+runtime Beta 5 installato per registrarlo, poi controlla Docker Desktop e la
 dashboard del progetto. Se la registrazione fallisce, consulta localmente
 `~/.config/dduo-solo-founder/bridge/launchd-error.log`; non incollarne il
 contenuto o credenziali in una segnalazione pubblica.
+
+## Codex è stato aggiornato su Windows e la verifica della memoria fallisce
+
+Gli aggiornamenti di Codex Desktop possono rimuovere il percorso di
+`codex.exe` salvato da dDuo, quando contiene la cartella di una vecchia versione.
+La Beta 5 restituisce `client_executable_unavailable` se l'eseguibile registrato,
+o la sua dipendenza Node registrata, non è più disponibile. La verifica non ha
+raggiunto gli hook nativi: non dimostra che manchi il consenso. dDuo conserva
+il profilo scelto e non passa a un'altra installazione Codex trovata nel `PATH`.
+
+Individua l'eseguibile dell'installazione ufficiale di Codex che stai usando
+e mantieni la stessa cartella del profilo gestito. Dalla cartella dei sorgenti
+della Beta 5 estratti, esegui questa anteprima in PowerShell, sostituendo il
+percorso di esempio con quello effettivo:
+
+```powershell
+uv run --frozen dduo-solo-founder repair-codex-client `
+  --client-executable "C:\percorso\attuale\codex.exe" `
+  --surface desktop `
+  --client-config-dir "$env:USERPROFILE\.codex" `
+  --dry-run
+```
+
+Se usi un profilo personalizzato, indica quello gestito al posto di `.codex`;
+per le altre superfici scegli `cli` o `vscode`. Con un launcher npm specifica
+anche `--client-node-executable` con il percorso assoluto di Node. Se la Beta 5
+è già installata, puoi eseguire direttamente
+`dduo-solo-founder repair-codex-client`.
+
+L'anteprima esegue soltanto `--version` sul client scelto, verifica la versione
+minima supportata e non modifica la registrazione. Per salvare, ripeti lo
+stesso comando senza `--dry-run`. Il comando rifiuta un profilo diverso da
+quello gestito, richiede una cartella di configurazione esistente e accessibile,
+conserva i registri dell'altro client e ripristina entrambi i file se il salvataggio
+fallisce. Non installa l'adapter, non cambia consenso o login e non prova la
+cattura. Un registro corrotto resta un errore da correggere nel setup e non
+viene sostituito silenziosamente.
+
+Dopo la riparazione richiama `check_memory_connection`. Rivedi il consenso
+degli hook nel client attuale soltanto se la nuova verifica segnala quel
+problema. Dopo l'installazione o l'aggiornamento del plugin segui il
+[passaggio alla nuova sessione](installation.it.md#passaggio-alla-nuova-sessione),
+poi verifica separatamente un turno completato e il consolidamento successivo.
+La riparazione riuscita della registrazione non prova da sola che le
+conversazioni vengano catturate.
 
 ## MCP funziona ma le nuove conversazioni non vengono registrate
 

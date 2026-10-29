@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.2.0-beta.5 — Beta 5
+
+- Estimate previously unpriced interactive and sleep usage in dashboard
+  summaries from the versioned catalog, including GPT-6.1 Sol history.
+  Identify the sample count and catalog date while keeping stored observations,
+  existing prices, measured zeros and embedding charges unchanged.
+- Remove the file-count caps from host backup collection, API validation and
+  encrypted archive verification. Growing session history remains recoverable;
+  size, ownership, project isolation and integrity checks still apply.
+- Keep the latest retained, verified backup visible in the dashboard even
+  when more than twenty newer attempts have failed.
+- Diagnose a missing recorded Codex executable or Node dependency as
+  `client_executable_unavailable`, without probing another client or suggesting
+  that hook permission is missing. Refresh the diagnosis immediately when
+  the selected installation or resolution failure changes.
+- Add `repair-codex-client` with an explicit executable, surface and existing
+  managed profile. Verify version compatibility before saving, support
+  `--dry-run`, and roll back both registration files on a write failure.
+  Repair leaves native hook trust, login, installed adapters and project data
+  untouched. Document recovery after Windows Codex updates in English and Italian.
+
+- Require patched Node.js release lines (22.23.4+, 24.22.1+, 26.12.1+) for
+  installation, update and verification after CVE-2026-111497. Reject older,
+  unsupported and prerelease runtimes before changing installation state;
+  removal and explicit snapshot recovery remain available.
+- Regenerate native hook and MCP commands with the validated installer Node
+  path on update, including Windows paths with spaces. Update the dashboard
+  build to Node 22.23.4 and Nginx 1.30.6 with Brotli 1.2.1 or newer.
+- Update the dashboard development dependencies to patched Vite 6.4.5,
+  Vitest 4.1.12, source-map-js 1.2.2 and Undici 7.30.1 without changing major versions.
+  The Undici update resolves the [upstream security advisories](https://github.com/nodejs/undici/releases/tag/v7.30.1)
+  reported by the current npm audit for the jsdom test dependency.
+- Add verified API-equivalent prices for GPT-6.1 Sol and Claude Opus, Sonnet
+  and Haiku 5.5 in the 2026-10-23 snapshot. Apply the new cache discounts and
+  Haiku's full-prompt pricing threshold while preserving historical prices.
+
 ## 0.2.0-beta.4 — Beta 4
 
 - On macOS, register the shared local host agent as a per-user LaunchAgent.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise actual snapshot descriptors with Linux rootful Docker and UID 1000.
 
-Requires cached node:22-alpine and postgres:16-alpine (or explicit --*-image).
+Requires cached node:22.23.4-alpine and postgres:16-alpine (or explicit --*-image).
 Builds an isolated Node + official Alpine docker-cli test image. No new daemon,
 real project, registry, credentials, runtime or existing volume is touched.
 The Docker socket grants daemon access; every test resource is UUID-qualified.
@@ -31,7 +31,7 @@ def docker(*args: str, timeout: int = 180, check: bool = True) -> subprocess.Com
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--node-image", default="node:22-alpine")
+    parser.add_argument("--node-image", default="node:22.23.4-alpine")
     parser.add_argument("--postgres-image", default="postgres:16-alpine")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()

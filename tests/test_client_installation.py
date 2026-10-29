@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from dduo_solo_founder.client_installation import (
+    ClientExecutableUnavailableError,
     ClientInstallationError,
     persist_client_installation,
     resolve_client_installation,
@@ -114,12 +115,25 @@ def test_stale_saved_launcher_requires_repair_and_never_uses_path(tmp_path: Path
     monkeypatch.setenv("PATH", str(tmp_path))
     _executable(tmp_path / "codex")
 
-    with pytest.raises(ClientInstallationError, match="saved client executable"):
+    with pytest.raises(ClientExecutableUnavailableError, match="saved client executable"):
         resolve_client_installation(
             "codex",
             config_dir=tmp_path / "config",
             record_path=records,
             scope_path=scopes,
+        )
+
+
+@pytest.mark.parametrize("field", ["launcher_path", "node_executable"])
+def test_unavailable_recorded_executable_has_specific_error_without_fallback(tmp_path, monkeypatch, field):
+    launcher = _executable(tmp_path / "codex.exe")
+    entry = {"launcher_path": str(launcher), field: str(tmp_path / "removed.exe")}
+    records = tmp_path / "executables.json"
+    records.write_text(json.dumps({"version": 1, "clients": {"codex": entry}}))
+    monkeypatch.setattr(ci, "_path_candidate", lambda _: pytest.fail("PATH fallback"))
+    with pytest.raises(ClientExecutableUnavailableError):
+        resolve_client_installation(
+            "codex", environment={}, record_path=records, scope_path=tmp_path / "scopes.json",
         )
 
 

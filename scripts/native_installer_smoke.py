@@ -366,6 +366,41 @@ def smoke(source: Path, *, simulate_runtime: bool) -> None:
         extension = ".exe" if os.name == "nt" else ""
         run([str(native_bin / f"dduo-solo-founder{extension}"), "--help"])
         if not simulate_runtime:
+            # Reproduce a removed versioned Desktop executable against the
+            # installed package, including a real synthetic .exe on Windows.
+            records = home / ".config/dduo-solo-founder/client-executables.json"
+            scopes = home / ".config/dduo-solo-founder/client-scopes.json"
+            saved = json.loads(records.read_text(encoding="utf-8"))
+            saved["clients"]["codex"] = {"launcher_path": str(home / "removed-build/codex.exe")}
+            records.write_text(json.dumps(saved), encoding="utf-8")
+            before = (records.read_bytes(), scopes.read_bytes())
+            unavailable = run([str(native_bin / f"python{extension}"), "-c", (
+                "import json,sys; from pathlib import Path; "
+                "from dduo_solo_founder.memory_connection import MemoryConnectionChecks; "
+                "print(json.dumps(MemoryConnectionChecks().check('codex',Path(sys.argv[1]),'smoke')))"
+            ), str(project)])
+            assert json.loads(unavailable.stdout)["reason"] == "client_executable_unavailable"
+            replacement = binaries / "updated Codex è"
+            write_cli(replacement, ["--client", "codex"], native=True)
+            # Unlike the real client, the synthetic CLI never creates its own
+            # profile. Model that existing directory explicitly for repair.
+            (home / ".codex").mkdir(exist_ok=True)
+            repair = [
+                str(native_bin / f"dduo-solo-founder{extension}"), "repair-codex-client",
+                "--client-executable", str(replacement) + extension,
+                "--surface", "desktop", "--client-config-dir", str(home / ".codex"),
+            ]
+            preview = json.loads(run([*repair, "--dry-run"]).stdout)
+            assert preview["registration_updated"] is False
+            assert (records.read_bytes(), scopes.read_bytes()) == before
+            repaired = json.loads(run(repair).stdout)
+            assert repaired["registration_updated"] is True
+            assert repaired["hook_authorization"] == "not_checked"
+            assert scopes.read_bytes() == before[1]
+            assert json.loads(records.read_text(encoding="utf-8"))["clients"]["claude"] == saved["clients"]["claude"]
+            assert (state / "codex-hook-trust").read_text(encoding="utf-8") == "trusted"
+            run([*installer, "--verify", *adapters])
+            print("PASS installed Codex registration diagnosis, dry run and repair", flush=True)
             # The installed Python code must resolve and authenticate the same
             # native payloads used for project-owned sleep. The executables in
             # this PATH are synthetic and cannot consume a real subscription.

@@ -9,7 +9,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from dduo_solo_founder import backup_service, restore_index
+from dduo_solo_founder import (
+    backup, backup_service, cli_bridge, project_config, project_secrets, restore_index,
+)
+from dduo_solo_founder.client_binding import binding_from_project
 from dduo_solo_founder.backup import BackupError, generate_recovery_key
 from dduo_solo_founder.config import Settings
 
@@ -105,6 +108,77 @@ class WorkingEngine(backup_service.BackupEngine):
         assert project_id == "p1"
         output.write_text("[]")
         return None
+
+
+def test_many_session_files_survive_host_transport_encryption_and_extraction(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    descriptor = root / ".dduo-solo-founder/project.toml"
+    descriptor.parent.mkdir(parents=True)
+    descriptor.write_text('id = "p1"\nname = "Project"\napi_port = 18001\nweb_port = 20001\n')
+    registry = tmp_path / "projects.json"
+    registry.write_text(json.dumps({"version": 1, "projects": {"p1": {
+        "root_path": str(root), "api_port": 18001, "web_port": 20001,
+    }}}))
+    host = tmp_path / "host"
+    monkeypatch.setattr(cli_bridge, "REGISTRY_PATH", registry)
+    monkeypatch.setattr(project_config, "REGISTRY_PATH", registry)
+    monkeypatch.setattr(cli_bridge, "CONFIG_DIR", host)
+    monkeypatch.setattr(project_secrets, "PROJECT_SECRETS_DIR", host / "project-secrets")
+    project_secrets.save_project_secrets("p1", {"OPENAI_API_KEY": "synthetic-key"})
+    codex = project_secrets.project_codex_home("p1")
+    codex.mkdir(parents=True)
+    (codex / "auth.json").write_text('{"tokens":{"access_token":"synthetic-token"}}')
+    binding = binding_from_project(root, project_config.load_project(root), require_approval=False)
+    hook_root = host / "hook-state"
+    hook_root.mkdir()
+    expected = {}
+    for index in range(1114):
+        name = f"p1-codex-session-{index:04d}.json"
+        content = json.dumps({
+            "project_id": "p1", "binding_id": binding.binding_id,
+            "session_external_id": f"session-{index}",
+            "pending_commits": [{"turn_id": f"turn-{index}", "text": "Caffè 東京"}],
+        }, ensure_ascii=False).encode("utf-8")
+        (hook_root / name).write_bytes(content)
+        expected[f"host-state/hooks/{name}"] = content
+    for name, owner, binding_id in (
+        ("other-project.json", "another-project", binding.binding_id),
+        ("other-binding.json", "p1", "another-binding"),
+    ):
+        (hook_root / name).write_text(json.dumps({"project_id": owner, "binding_id": binding_id}))
+
+    supplement = cli_bridge.build_backup_supplement("p1")
+    host_names = {item["path"] for item in supplement["files"] if item["path"].startswith("host-state/hooks/")}
+    assert host_names == set(expected)
+    original_client = httpx.Client
+
+    def serve(request):
+        assert request.url.path == "/v1/backup/supplement"
+        assert request.url.params["project_id"] == "p1"
+        assert request.headers["Authorization"] == "Bearer synthetic-bridge-token"
+        return httpx.Response(200, json=supplement)
+
+    monkeypatch.setattr(backup_service.httpx, "Client", lambda **kwargs:
+                        original_client(transport=httpx.MockTransport(serve), **kwargs))
+
+    class FullSupplementEngine(WorkingEngine):
+        _fetch_host_supplement = backup_service.BackupEngine._fetch_host_supplement
+
+    engine = FullSupplementEngine(settings(
+        tmp_path, cli_bridge_url="http://bridge.test", cli_bridge_token="synthetic-bridge-token",
+        backup_include_qdrant=False,
+    ))
+    result = engine.create("p1", "Many sessions", "0.2.0-beta.5")
+    destination = tmp_path / "restored"
+    verified = backup.verify_archive(
+        engine.settings.backup_directory / result.archive_name,
+        engine.settings.backup_key_file.read_text(), extract_to=destination,
+    )
+    restored_names = {name for name in verified.manifest["files"] if name.startswith("host-state/hooks/")}
+    assert restored_names == set(expected)
+    for name, content in expected.items():
+        assert destination.joinpath(*name.split("/")).read_bytes() == content
+        assert (hook_root / Path(name).name).read_bytes() == content
 
 
 def test_backup_engine_creates_verifies_and_prunes(tmp_path: Path):

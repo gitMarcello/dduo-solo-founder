@@ -2,7 +2,7 @@
 
 # Troubleshooting
 
-Troubleshooting for dDuo Solo Founder `0.2.0-beta.4`.
+Troubleshooting for dDuo Solo Founder `0.2.0-beta.5`.
 
 Normal use should require no technical diagnosis. dDuo keeps project work
 available when its configured local or remote memory is temporarily unavailable.
@@ -18,7 +18,7 @@ launchctl print "gui/$(id -u)/it.dduo.solo-founder.agent"
 ```
 
 If it is missing, run `dduo-solo-founder start --project-root <PROJECT>` from
-the installed Beta 4 runtime to register it, then check Docker Desktop and
+the installed Beta 5 runtime to register it, then check Docker Desktop and
 the project's dashboard. If registration fails, inspect the private
 `~/.config/dduo-solo-founder/bridge/launchd-error.log` locally; do not paste
 its contents or any credentials into a public report.
@@ -45,6 +45,48 @@ Claude's native authorization check is unavailable; this does not declare its
 capture broken or verified. If MCP and the Skill were not loaded either, dDuo
 cannot deliver an independent warning. The prompt to choose is model-mediated,
 not a technical lock on the entire coding agent.
+
+## Codex was updated on Windows and memory checks fail
+
+Codex Desktop updates can remove a versioned `codex.exe` path saved in dDuo's
+registration. Beta 5 reports `client_executable_unavailable` when that recorded
+executable, or its recorded Node dependency, is no longer available. The check
+has not reached native hooks: it does not establish that hook permission is
+missing. dDuo keeps the selected profile and never substitutes another Codex
+installation found on `PATH`.
+
+Locate the executable belonging to the official Codex installation you are
+using and keep the same managed configuration directory. From the extracted
+Beta 5 source directory, preview the repair in PowerShell (replace the example
+executable with its actual path):
+
+```powershell
+uv run --frozen dduo-solo-founder repair-codex-client `
+  --client-executable "C:\path\to\current\codex.exe" `
+  --surface desktop `
+  --client-config-dir "$env:USERPROFILE\.codex" `
+  --dry-run
+```
+
+Use your managed profile instead of `.codex` if you configured a custom one;
+select `cli` or `vscode` for those surfaces. For an npm launcher, also specify
+`--client-node-executable` with its absolute Node path. If Beta 5 is already
+installed, you can run `dduo-solo-founder repair-codex-client` directly.
+
+The preview runs only the chosen executable's `--version`, checks the minimum
+supported version and makes no registration changes. Remove `--dry-run` from
+the same command to save. The command refuses a different managed profile,
+requires an existing accessible configuration directory, preserves the other
+client's records and restores both registration files if saving fails.
+It does not install an adapter, change hook trust or login, or test capture.
+An invalid record remains a setup-repair error rather than being silently replaced.
+
+Call `check_memory_connection` again after repair. Only if it then reports a
+native authorization problem should you review hooks in the current client.
+After installing or updating the plugin, follow the
+[required handoff](installation.md#required-handoff), then verify a completed
+turn and subsequent sleep separately. A successful registration repair alone
+does not prove that conversations are being captured.
 
 ## The client asks approval before consolidating remote memory
 

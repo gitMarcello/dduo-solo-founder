@@ -12,6 +12,29 @@ prepares the runtime side by side and updates the selected adapter transactional
 It opens Setup unless `--no-setup` or `--headless` is selected. Fully restart
 Codex and open a new chat; Claude needs only a new session.
 
+## Node.js security prerequisite
+
+For CVE-2026-111497, use a stable Node.js release in one of these lines:
+22.23.4 or newer in 22.x, 24.22.1 or newer in 24.x, or 26.12.1 or newer in 26.x.
+Older and unlisted release lines, including 18.x and 20.x, are rejected by the
+installer before it changes local state. Uninstall and explicit snapshot
+recovery remain available even with an old Node runtime.
+
+First update Node on each workstation and memory host, then run the explicitly
+selected dDuo installer **using that patched executable**. Updating a PATH alias
+alone does not repair existing hooks: their commands contain the absolute Node
+path selected during installation. The dDuo update regenerates those commands
+and rebuilds local project images. Verify the installed adapter, restart Codex
+or start a new Claude session, and verify the active dashboard image contains
+Brotli 1.2.1 or newer. A VPS must be updated on that host as well. This change
+does not automatically install Node or alter a third-party client's runtime.
+
+The Python memory API does not install a Brotli decoder. The JavaScript hook
+wrappers do not decompress input; requiring a patched runtime prevents retaining
+the vulnerable dependency even on those paths. See the
+[Node.js advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)
+and [Brotli fix](https://github.com/google/brotli/releases/tag/v1.2.1).
+
 ## Agent Plugins update boundary
 
 The revision contains the portable package and native Codex/Claude adapters

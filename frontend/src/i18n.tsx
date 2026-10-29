@@ -485,6 +485,8 @@ const italian = {
   'API equivalent estimate': 'Stima equivalente API',
   'Catalog-derived or client-reported estimate · not actual spend':
     'Stima da listino o riportata dal client · non è una spesa reale',
+  'Includes {count} previously unpriced samples estimated using catalog {versions}.':
+    'Inclusi {count} campioni prima senza prezzo, stimati con il listino {versions}.',
   'Interactive usage by provider and model': 'Utilizzo interattivo per provider e modello',
   '{count} samples observed': '{count} campioni osservati',
   'Provider input': 'Input del provider',

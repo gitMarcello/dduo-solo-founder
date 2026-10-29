@@ -28,6 +28,7 @@ import { MarkdownContent, MarkdownExcerpt } from './Markdown';
 import type {
   ActivityEvent,
   BackupStatus,
+  CatalogEstimates,
   ContextEventDetail,
   MeasurementCoverage,
   Memory,
@@ -1311,14 +1312,31 @@ function interactiveModelLabel(provider: string | null, model: string | null, t:
   return provider?.toLowerCase() === 'claude' ? t('Mixed/unknown') : t('Unknown model');
 }
 
+function CatalogEstimateNote({ estimates }: { estimates?: CatalogEstimates }) {
+  const { t } = useI18n();
+  if (!estimates?.samples) return null;
+  return (
+    <small>
+      {t('Includes {count} previously unpriced samples estimated using catalog {versions}.', {
+        count: number(estimates.samples),
+        versions: estimates.pricing_versions
+          .map((value) => value.replace(/^api-list-prices-/, ''))
+          .join(', '),
+      })}
+    </small>
+  );
+}
+
 function ApiEquivalentCost({
   value,
   coverage,
   note,
+  catalogEstimates,
 }: {
   value: string | null | undefined;
   coverage?: PricingCoverage;
   note: string;
+  catalogEstimates?: CatalogEstimates;
 }) {
   const { t } = useI18n();
   const available = validMoney(value);
@@ -1339,6 +1357,7 @@ function ApiEquivalentCost({
         )}
       </small>
       <small>{note}</small>
+      <CatalogEstimateNote estimates={catalogEstimates} />
     </>
   );
 }
@@ -2019,6 +2038,7 @@ export function ObservabilityView({
                 <ApiEquivalentCost
                   value={agentUsage?.equivalent_api_cost_usd}
                   coverage={agentUsage?.pricing_coverage}
+                  catalogEstimates={agentUsage?.catalog_estimates}
                   note={t('Catalog-derived or client-reported estimate · not actual spend')}
                 />
               </div>
@@ -2133,6 +2153,7 @@ export function ObservabilityView({
                         unavailable: number(item.pricing_coverage.unavailable),
                       })}
                     </small>
+                    <CatalogEstimateNote estimates={item.catalog_estimates} />
                   </div>
                 ))
               ) : (
@@ -2196,6 +2217,7 @@ export function ObservabilityView({
                 <ApiEquivalentCost
                   value={summary.sleep.equivalent_api_cost_usd}
                   coverage={summary.sleep.pricing_coverage}
+                  catalogEstimates={summary.sleep.catalog_estimates}
                   note={t(
                     'Catalog-derived or Claude Code client estimate · subscription access is not billed here',
                   )}

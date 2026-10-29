@@ -344,7 +344,52 @@ def date_window(
     return start, end, bucket, display_timezone
 
 
-def _sum(rows: list[ObservabilityEvent], attribute: str, source: str | None = None) -> int | None:
+@dataclass(frozen=True, slots=True)
+class _CatalogEstimate:
+    """A request-local price view; never attach it to the database session."""
+
+    event: ObservabilityEvent
+    cost_usd: Decimal
+    pricing_version: str
+    details: dict[str, Any]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.event, name)
+
+
+SummaryEvent = ObservabilityEvent | _CatalogEstimate
+
+
+def _summary_event(event: ObservabilityEvent) -> SummaryEvent:
+    if (
+        event.category not in {"agent_usage", "sleep_model"}
+        or event.cost_usd is not None
+        or event.pricing_version is not None
+        or event.measurement_source not in {"provider_reported", "local_estimate"}
+        or (event.details or {}).get("cost_kind") not in {None, "api_equivalent"}
+    ):
+        return event
+    estimate = api_equivalent_cost(
+        provider=event.provider,
+        model=event.model,
+        input_tokens=event.input_tokens,
+        cached_input_tokens=event.cached_input_tokens,
+        cache_write_input_tokens=event.cache_write_input_tokens,
+        output_tokens=event.output_tokens,
+        reasoning_tokens=event.reasoning_tokens,
+        occurred_at=event.occurred_at,
+    )
+    if estimate is None:
+        return event
+    return _CatalogEstimate(
+        event=event,
+        cost_usd=estimate.cost_usd,
+        pricing_version=estimate.pricing_version,
+        details={**(event.details or {}), **estimate.numeric_details()},
+    )
+
+
+def _sum(rows: list[SummaryEvent], attribute: str, source: str | None = None) -> int | None:
     eligible = [row for row in rows if source is None or row.measurement_source == source]
     if not eligible:
         return None
@@ -357,7 +402,7 @@ def _sum(rows: list[ObservabilityEvent], attribute: str, source: str | None = No
     return sum(int(value) for value in values)
 
 
-def _decimal_sum(rows: list[ObservabilityEvent], attribute: str) -> Decimal | None:
+def _decimal_sum(rows: list[SummaryEvent], attribute: str) -> Decimal | None:
     values = [
         Decimal(value) for row in rows for value in [getattr(row, attribute)] if value is not None
     ]
@@ -368,7 +413,7 @@ def _decimal_text(value: Decimal | None) -> str | None:
     return format(value, "f") if value is not None else None
 
 
-def _coverage(rows: list[ObservabilityEvent]) -> dict[str, int]:
+def _coverage(rows: list[SummaryEvent]) -> dict[str, int]:
     return {
         "reported": sum(item.measurement_source == "provider_reported" for item in rows),
         "estimated": sum(item.measurement_source == "local_estimate" for item in rows),
@@ -384,7 +429,7 @@ def _percentile(values: list[int], percentile: float) -> int | None:
     return values[index]
 
 
-def _request_total(rows: list[ObservabilityEvent]) -> int:
+def _request_total(rows: list[SummaryEvent]) -> int:
     # Pre-alpha.44 provider events can have no explicit count; one event was
     # one request under that contract. An explicit zero always means that no
     # provider call happened (for example, a payload-only Qdrant refresh).
@@ -392,9 +437,9 @@ def _request_total(rows: list[ObservabilityEvent]) -> int:
 
 
 def _by_operation(
-    rows: list[ObservabilityEvent], *, recorded_request_count: bool = False
+    rows: list[SummaryEvent], *, recorded_request_count: bool = False
 ) -> list[dict[str, Any]]:
-    grouped: dict[str, list[ObservabilityEvent]] = {}
+    grouped: dict[str, list[SummaryEvent]] = {}
     for row in rows:
         grouped.setdefault(row.operation, []).append(row)
     return [
@@ -414,7 +459,7 @@ def _by_operation(
     ]
 
 
-def _pricing_coverage(rows: list[ObservabilityEvent]) -> dict[str, int]:
+def _pricing_coverage(rows: list[SummaryEvent]) -> dict[str, int]:
     return {
         "priced": sum(item.cost_usd is not None for item in rows),
         "unavailable": sum(item.cost_usd is None for item in rows),
@@ -429,7 +474,7 @@ _COST_COMPONENT_DETAIL_KEYS = {
 }
 
 
-def _event_cost_components(row: ObservabilityEvent) -> dict[str, Decimal] | None:
+def _event_cost_components(row: SummaryEvent) -> dict[str, Decimal] | None:
     details = row.details or {}
     persisted: dict[str, Decimal] = {}
     for output_key, detail_key in _COST_COMPONENT_DETAIL_KEYS.items():
@@ -470,7 +515,7 @@ def _event_cost_components(row: ObservabilityEvent) -> dict[str, Decimal] | None
     }
 
 
-def _cost_breakdown(rows: list[ObservabilityEvent]) -> dict[str, Any]:
+def _cost_breakdown(rows: list[SummaryEvent]) -> dict[str, Any]:
     totals = {key: Decimal(0) for key in _COST_COMPONENT_DETAIL_KEYS}
     priced = 0
     unavailable = 0
@@ -489,7 +534,7 @@ def _cost_breakdown(rows: list[ObservabilityEvent]) -> dict[str, Any]:
     } | {"priced": priced, "unavailable": unavailable}
 
 
-def _uncached_input_tokens(rows: list[ObservabilityEvent]) -> int | None:
+def _uncached_input_tokens(rows: list[SummaryEvent]) -> int | None:
     values: list[int] = []
     measured = [row for row in rows if row.measurement_source == "provider_reported"]
     if not measured:
@@ -511,7 +556,7 @@ def _uncached_input_tokens(rows: list[ObservabilityEvent]) -> int | None:
     return sum(values)
 
 
-def _cache_hit_percent(rows: list[ObservabilityEvent]) -> float | None:
+def _cache_hit_percent(rows: list[SummaryEvent]) -> float | None:
     cached_total = 0
     eligible_total = 0
     measured = [row for row in rows if row.measurement_source == "provider_reported"]
@@ -539,8 +584,8 @@ def _cache_hit_percent(rows: list[ObservabilityEvent]) -> float | None:
     return round(cached_total * 100 / eligible_total, 2)
 
 
-def _by_provider_model(rows: list[ObservabilityEvent]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str | None, str | None], list[ObservabilityEvent]] = {}
+def _by_provider_model(rows: list[SummaryEvent]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str | None, str | None], list[SummaryEvent]] = {}
     for row in rows:
         grouped.setdefault((row.provider, row.model), []).append(row)
     return [
@@ -558,14 +603,14 @@ def _by_provider_model(rows: list[ObservabilityEvent]) -> list[dict[str, Any]]:
 
 
 def _timeline(
-    rows: list[ObservabilityEvent],
+    rows: list[SummaryEvent],
     bucket: str,
     display_timezone: ZoneInfo,
     category: str,
     *,
     recorded_request_count: bool = False,
 ) -> list[dict[str, Any]]:
-    buckets: dict[str, list[ObservabilityEvent]] = {}
+    buckets: dict[str, list[SummaryEvent]] = {}
     for row in rows:
         timestamp = row.occurred_at
         if timestamp.tzinfo is None:
@@ -608,7 +653,7 @@ def _timeline(
 
 
 def _metric_block(
-    rows: list[ObservabilityEvent], *, recorded_request_count: bool = False
+    rows: list[SummaryEvent], *, recorded_request_count: bool = False
 ) -> dict[str, Any]:
     durations = [int(item.duration_ms) for item in rows if item.duration_ms is not None]
     return {
@@ -632,15 +677,20 @@ def _metric_block(
     }
 
 
-def _equivalent_metric_block(rows: list[ObservabilityEvent]) -> dict[str, Any]:
+def _equivalent_metric_block(rows: list[SummaryEvent]) -> dict[str, Any]:
     block = _metric_block(rows)
     block["equivalent_api_cost_breakdown"] = _cost_breakdown(rows)
+    estimates = [row for row in rows if isinstance(row, _CatalogEstimate)]
+    block["catalog_estimates"] = {
+        "samples": len(estimates),
+        "pricing_versions": sorted({row.pricing_version for row in estimates}),
+    }
     for operation in block["by_operation"]:
         operation["equivalent_api_cost_usd"] = operation.pop("cost_usd")
     return block
 
 
-def _component_bytes(rows: list[ObservabilityEvent]) -> dict[str, int]:
+def _component_bytes(rows: list[SummaryEvent]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for row in rows:
         for key, value in (row.details or {}).items():
@@ -652,7 +702,7 @@ def _component_bytes(rows: list[ObservabilityEvent]) -> dict[str, int]:
     return totals
 
 
-def _detail_values(rows: list[ObservabilityEvent], key: str) -> list[int]:
+def _detail_values(rows: list[SummaryEvent], key: str) -> list[int]:
     values: list[int] = []
     for row in rows:
         value = (row.details or {}).get(key)
@@ -662,12 +712,12 @@ def _detail_values(rows: list[ObservabilityEvent], key: str) -> list[int]:
     return values
 
 
-def _detail_sum(rows: list[ObservabilityEvent], key: str) -> int | None:
+def _detail_sum(rows: list[SummaryEvent], key: str) -> int | None:
     values = _detail_values(rows, key)
     return sum(values) if values else None
 
 
-def _context_budget_summary(rows: list[ObservabilityEvent]) -> dict[str, Any]:
+def _context_budget_summary(rows: list[SummaryEvent]) -> dict[str, Any]:
     measured = [
         row
         for row in rows
@@ -722,7 +772,7 @@ def _context_budget_summary(rows: list[ObservabilityEvent]) -> dict[str, Any]:
     }
 
 
-def _context_delivery_summary(rows: list[ObservabilityEvent]) -> dict[str, Any]:
+def _context_delivery_summary(rows: list[SummaryEvent]) -> dict[str, Any]:
     measured = [
         row
         for row in rows
@@ -746,7 +796,7 @@ def _context_delivery_summary(rows: list[ObservabilityEvent]) -> dict[str, Any]:
     }
 
 
-def _reliability_block(rows: list[ObservabilityEvent]) -> dict[str, Any]:
+def _reliability_block(rows: list[SummaryEvent]) -> dict[str, Any]:
     """Keep reliability operational; usage remains separated by model boundary."""
     block = _metric_block(rows)
     for metric_name in (
@@ -786,8 +836,8 @@ async def build_summary(
         statement = statement.where(ObservabilityEvent.actor_member_id == actor_member_id)
     rows = list((await db.scalars(statement.order_by(ObservabilityEvent.occurred_at))).all())
     context_rows = [item for item in rows if item.category == "context"]
-    agent_rows = [item for item in rows if item.category == "agent_usage"]
-    sleep_rows = [item for item in rows if item.category == "sleep_model"]
+    agent_rows = [_summary_event(item) for item in rows if item.category == "agent_usage"]
+    sleep_rows = [_summary_event(item) for item in rows if item.category == "sleep_model"]
     embedding_rows = [item for item in rows if item.category == "embedding"]
     # Payload-only Qdrant maintenance remains visible in reliability/recent
     # operations, but it is not an Embedding API request and has no provider
