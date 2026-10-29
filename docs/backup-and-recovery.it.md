@@ -97,6 +97,11 @@ pubblicati solo quando l'agente host autenticato restituisce il supplemento
 limitato e filtrato per progetto necessario al recupero integrale. L'assenza
 dell'agente non produce un backup falsamente dichiarato completo.
 
+Il supplemento e l'archivio cifrato non hanno un tetto al numero di file.
+Gli stati delle sessioni possono accumularsi senza raggiungere una soglia
+numerica; restano i limiti in byte, i controlli sulla proprietà e il filtro
+per progetto. Nessuno stato di sessione viene scartato per far rientrare il backup.
+
 Dopo la scrittura, il runtime decifra l'archivio, verifica l'intero inventario
 ZIP, rifiuta percorsi non sicuri, link, membri duplicati, file host inattesi e
 stato di altri progetti, controlla dimensioni e digest ed esegue
@@ -197,6 +202,8 @@ semantiche come ricostruibili da PostgreSQL.
 La dashboard offre al gestore stato, download diretto degli archivi verificati
 conservati e creazione manuale. Un errore resta visibile nell'attività e nello
 stato senza dichiarare protette le modifiche.
+L'ultimo archivio verificato e ancora conservato rimane disponibile anche dopo
+una lunga serie di tentativi falliti: viene cercato nell'intera cronologia.
 
 Prima di aggiornare o disinstallare, l'installer legge il registro privato ed
 esegue l'equivalente di questi comandi per ciascun progetto registrato con una
@@ -378,6 +385,11 @@ usa directory temporanee private e ne limita la durata.
 <a id="failure-behavior"></a>
 ## Comportamento in caso di errore
 
+- Nelle release precedenti alla Beta 5, `backup supplement contains too many files`
+  o `backup contains too many files` indica i vecchi limiti sul numero di file.
+  Aggiorna sia l'agente host sia i servizi del progetto, conservando gli stati
+  delle sessioni e gli archivi esistenti. Se il backup preventivo fallisce e
+  blocca l'installazione, usa l'eccezione esplicita all'aggiornamento descritta sopra.
 - Destinazione non disponibile: nessun archivio; le modifiche restano da proteggere.
 - Chiave errata o contenuto cifrato alterato: autenticazione fallita prima dell'estrazione.
 - Inventario ZIP, percorso, checksum o dimensione non validi: verifica fallita.

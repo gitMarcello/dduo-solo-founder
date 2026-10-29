@@ -1723,10 +1723,6 @@ def test_backup_supplement_is_project_scoped_bounded_and_authenticated(monkeypat
         item["path"] for item in claude_only["files"]
     }
 
-    monkeypatch.setattr(cli_bridge, "MAX_BACKUP_SUPPLEMENT_FILES", 1)
-    with pytest.raises(ValueError, match="too many files"):
-        cli_bridge.build_backup_supplement(project_id)
-    monkeypatch.setattr(cli_bridge, "MAX_BACKUP_SUPPLEMENT_FILES", 512)
     monkeypatch.setattr(cli_bridge, "MAX_BACKUP_SUPPLEMENT_BYTES", 0)
     with pytest.raises(ValueError, match="safe limit"):
         cli_bridge.build_backup_supplement(project_id)

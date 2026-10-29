@@ -3932,6 +3932,16 @@ async def _backup_status(project_id: str, db: AsyncSession) -> dict:
             .limit(20)
         )
     ).all()
+    latest_verified = await db.scalar(
+        select(BackupRecord)
+        .where(
+            BackupRecord.project_id == project_id,
+            BackupRecord.status == "verified",
+            BackupRecord.retained.is_(True),
+        )
+        .order_by(desc(BackupRecord.created_at), desc(BackupRecord.id))
+        .limit(1)
+    )
     configured, error = _backup_available(project_id)
     settings = get_settings()
     return {
@@ -3948,9 +3958,7 @@ async def _backup_status(project_id: str, db: AsyncSession) -> dict:
             "monthly": settings.backup_retention_monthly,
         },
         "latest": serialize(rows[0]) if rows else None,
-        "latest_verified": next(
-            (serialize(record) for record in rows if record.status == "verified"), None
-        ),
+        "latest_verified": serialize(latest_verified) if latest_verified else None,
         "items": [serialize(record) for record in rows],
     }
 

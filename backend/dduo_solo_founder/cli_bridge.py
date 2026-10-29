@@ -82,7 +82,6 @@ from dduo_solo_founder.project_secrets import (
 )
 MAX_BODY_BYTES = 4 * 1024 * 1024
 MAX_BACKUP_SUPPLEMENT_BYTES = 32 * 1024 * 1024
-MAX_BACKUP_SUPPLEMENT_FILES = 512
 MAX_BACKUP_SUPPLEMENT_FILE_BYTES = 8 * 1024 * 1024
 CONFIG_DIR = Path.home() / ".config" / "dduo-solo-founder"
 USER_ENV = CONFIG_DIR / "env"
@@ -2488,8 +2487,6 @@ def build_backup_supplement(project_id: str) -> dict[str, Any]:
         nonlocal total
         if archive_path in included_paths:
             return
-        if len(files) >= MAX_BACKUP_SUPPLEMENT_FILES:
-            raise ValueError("backup supplement contains too many files")
         item, size = _supplement_file(archive_path, source)
         if total + size > MAX_BACKUP_SUPPLEMENT_BYTES:
             raise ValueError("backup supplement exceeds its safe limit")

@@ -110,6 +110,8 @@ jobs:
           tests/test_project_rename.py
           tests/test_project_activation.py
           tests/test_backup_service.py::test_postgres_commands_use_environment_and_report_errors
+          tests/test_backup_service.py::test_many_session_files_survive_host_transport_encryption_and_extraction
+          tests/test_api.py::test_backup_status_keeps_retained_verified_archive_beyond_recent_failures
           tests/test_claude_statusline.py::test_windows_launcher_encoding_handles_spaces_and_shell_metacharacters
           tests/test_cli_bridge.py::test_backup_supplement_is_project_scoped_bounded_and_authenticated
           tests/test_cli_bridge.py::test_sleep_attempt_keeps_the_authenticated_runtime_and_private_environment

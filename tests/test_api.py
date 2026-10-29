@@ -2567,6 +2567,54 @@ class SuccessfulBackup:
         )
 
 
+async def test_backup_status_keeps_retained_verified_archive_beyond_recent_failures(
+    api_client, db_factory, monkeypatch,
+):
+    client, _ = api_client
+    _, project = await create_project(client)
+    _, other = await create_project(client)
+    monkeypatch.setattr(main, "get_settings", backup_settings)
+    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    async with db_factory() as db:
+        verified = BackupRecord(
+            project_id=project["id"], status="verified", retained=True,
+            archive_name="retained.dduobackup", size_bytes=1234,
+            created_at=start, verified_at=start,
+        )
+        db.add_all([
+            verified,
+            BackupRecord(
+                project_id=other["id"], status="verified", retained=True,
+                archive_name="other-project.dduobackup", created_at=start + timedelta(days=1),
+            ),
+            BackupRecord(
+                project_id=project["id"], status="verified", retained=False,
+                archive_name="removed.dduobackup", created_at=start + timedelta(days=1),
+            ),
+            *[BackupRecord(
+                project_id=project["id"], status="failed",
+                created_at=start + timedelta(days=2, minutes=index), error="synthetic failure",
+            ) for index in range(25)],
+        ])
+        await db.commit()
+        await db.refresh(verified)
+        verified_id = verified.id
+
+    status = (await client.get(f"/projects/{project['id']}/backups")).json()
+    assert len(status["items"]) == 20
+    assert all(item["status"] == "failed" for item in status["items"])
+    assert status["latest"]["status"] == "failed"
+    assert status["latest_verified"]["id"] == verified_id
+    assert status["latest_verified"]["archive_name"] == "retained.dduobackup"
+    assert status["latest_verified"]["size_bytes"] == 1234
+    async with db_factory() as db:
+        archived = await db.get(BackupRecord, verified_id)
+        archived.retained = False
+        await db.commit()
+    status = (await client.get(f"/projects/{project['id']}/backups")).json()
+    assert status["latest_verified"] is None
+
+
 async def test_backup_status_manual_success_failure_and_generation_race(
     api_client, db_factory, monkeypatch, tmp_path
 ):

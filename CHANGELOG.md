@@ -2,6 +2,11 @@
 
 ## 0.2.0-beta.5 — Beta 5
 
+- Remove the file-count caps from host backup collection, API validation and
+  encrypted archive verification. Growing session history remains recoverable;
+  size, ownership, project isolation and integrity checks still apply.
+- Keep the latest retained, verified backup visible in the dashboard even
+  when more than twenty newer attempts have failed.
 - Diagnose a missing recorded Codex executable or Node dependency as
   `client_executable_unavailable`, without probing another client or suggesting
   that hook permission is missing. Refresh the diagnosis immediately when

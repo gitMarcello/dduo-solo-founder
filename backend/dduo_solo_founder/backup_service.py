@@ -37,7 +37,6 @@ from dduo_solo_founder.runtime_settings import write_runtime_settings
 _backup_lock = threading.Lock()
 MAX_SUPPLEMENT_BYTES = 32 * 1024 * 1024
 MAX_SUPPLEMENT_FILE_BYTES = 8 * 1024 * 1024
-MAX_SUPPLEMENT_FILES = 512
 PORTABLE_SECRET_KEYS = SECRET_ENV_KEYS
 
 
@@ -269,7 +268,6 @@ FROM (
             or supplement.get("project_id") != project_id
             or captured_at.tzinfo is None
             or not isinstance(files, list)
-            or len(files) > MAX_SUPPLEMENT_FILES
             or not isinstance(warnings, list)
             or len(warnings) > 100
             or not all(isinstance(item, str) and len(item) <= 500 for item in warnings)
