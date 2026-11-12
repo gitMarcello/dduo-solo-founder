@@ -18,6 +18,13 @@ from dduo_solo_founder.client_installation import ClientCommand, ClientInstallat
 from dduo_solo_founder.schemas import MemoryConsolidationPayload
 
 
+@pytest.fixture(autouse=True)
+def verified_legacy_subscription_for_isolated_runner_unit_tests(monkeypatch):
+    # These tests mock CLI execution. Authentication refusal is exercised in
+    # test_subscription_only.py, which does not install this fixture.
+    monkeypatch.setattr(cli_bridge.CliRunner, "_require_unscoped_subscription", staticmethod(lambda _p: None))
+
+
 SCHEMA = {
     "type": "object",
     "properties": {"topics": {"type": "array", "items": {"type": "object"}}},
@@ -233,6 +240,7 @@ def test_codex_runner_uses_ephemeral_schema_output(monkeypatch):
         assert config_values == {
             'web_search="disabled"',
             'model_reasoning_effort="medium"',
+            'forced_login_method="chatgpt"',
         }
         assert kwargs["cwd"] != Path.cwd()
         return SimpleNamespace(returncode=0, stdout="", stderr="")
