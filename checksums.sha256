@@ -6,7 +6,7 @@ f80c5fc94eddb7f182b7bd1283aedf7b9256800d6bf480d93ede46ba6f4f2961  .gitattributes
 cf474da314a57e5139a02a22bb0bb6df13c2de84279382e1423e249e902881ad  .github/release-notes/0.2.0-beta.3.md
 048bd39b5634f9876a6d9e2264e784b83f673c7a487d4988ef5edbae620fee66  .github/release-notes/0.2.0-beta.4.md
 6c45675f3a8f21bc3f6f729ffdd276c87dbcf1b92db05b6e0b57b16e63e37676  .github/release-notes/0.2.0-beta.5.md
-52027dabd7f8cad5485f286c8442000c134b935e16867f2f4bbb5b0dc98fae07  .github/workflows/ci.yml
+9fb42d1b66c6c6f7b65ad592ccf874c7562b541b3a5c0a3176eb5f89bc2f04f2  .github/workflows/ci.yml
 ce4908eb1e549fd4c27c7ec00ada42149ecd8394144c5ff414b59b903c19853c  .github/workflows/live-e2e.yml
 e1b2a4d0d65774783036440d9023dd3e95c7480834301e0b685b997e8c251b97  .github/workflows/release.yml
 97ab4e080c443fdbec0ae40d7c3a05e2b41231c6424fe24abe540223d489fb9b  .gitignore
