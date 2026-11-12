@@ -18,6 +18,13 @@ from dduo_solo_founder.client_installation import ClientCommand, ClientInstallat
 from dduo_solo_founder.schemas import MemoryConsolidationPayload
 
 
+@pytest.fixture(autouse=True)
+def verified_legacy_subscription_for_isolated_runner_unit_tests(monkeypatch):
+    # These tests mock CLI execution. Authentication refusal is exercised in
+    # test_subscription_only.py, which does not install this fixture.
+    monkeypatch.setattr(cli_bridge.CliRunner, "_require_unscoped_subscription", staticmethod(lambda _p: (None, None)))
+
+
 SCHEMA = {
     "type": "object",
     "properties": {"topics": {"type": "array", "items": {"type": "object"}}},
@@ -226,13 +233,14 @@ def test_codex_runner_uses_ephemeral_schema_output(monkeypatch):
         }
         assert disabled == {"shell_tool", "unified_exec"}
         assert 'web_search="disabled"' in command
-        assert command[command.index("--model") + 1] == "gpt-5.6-terra"
+        assert command[command.index("--model") + 1] == "gpt-6.1-terra"
         config_values = {
             command[index + 1] for index, value in enumerate(command[:-1]) if value == "--config"
         }
         assert config_values == {
             'web_search="disabled"',
             'model_reasoning_effort="medium"',
+            'forced_login_method="chatgpt"',
         }
         assert kwargs["cwd"] != Path.cwd()
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -247,7 +255,7 @@ def test_codex_runner_uses_ephemeral_schema_output(monkeypatch):
         }
     )
     assert result["ok"] and result["output"] == {"topics": []}
-    assert result["model"] == "gpt-5.6-terra"
+    assert result["model"] == "gpt-6.1-terra"
 
 
 def test_codex_runner_pins_project_scoped_codex_home(monkeypatch):

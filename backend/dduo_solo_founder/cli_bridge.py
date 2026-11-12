@@ -92,7 +92,7 @@ SYSTEM_GUARD = (
 )
 CLI_PROCESS_LOCK = threading.RLock()
 AUTH_STATUS_TTL_SECONDS = 5.0
-CODEX_SLEEP_MODEL = "gpt-5.6-terra"
+CODEX_SLEEP_MODEL = "gpt-6.1-terra"
 CODEX_SLEEP_REASONING_EFFORT = "medium"
 SETUP_TICKET_TTL_SECONDS = 60
 SETUP_SESSION_TTL_SECONDS = 10 * 60
@@ -609,6 +609,24 @@ class CliRunner:
             else self._run_claude(prompt, schema, timeout)
         )
 
+    @staticmethod
+    def _require_unscoped_subscription(
+        provider: str,
+    ) -> tuple[ClientInstallation, dict[str, str]]:
+        """Authenticate the exact installation and profile used by legacy execution."""
+        installation = CliRunner._installation(provider)
+        environment = installation.environment(detached_cli_environment())
+        status = subscription_auth_status(
+            provider, environment=environment, installation=installation
+        )
+        if not status.ready:
+            raise CliExecutionError(
+                "auth_required" if status.reason == "login_required" else "bridge_unavailable",
+                "A verified subscription is required for memory generation.",
+                provider=provider,
+            )
+        return installation, environment
+
     def generate(self, request: dict[str, Any]) -> dict[str, Any]:
         preferred_provider = str(request.get("provider") or "").strip().lower()
         task = str(request.get("task") or "memory_consolidation").strip()[:100]
@@ -630,6 +648,10 @@ class CliRunner:
             f"{SYSTEM_GUARD}\n\n<task>{task}</task>\n\n<instructions>\n{instructions}\n</instructions>"
             f"\n\n<input_json>\n{input_text}\n</input_json>"
         )
+        legacy_installation, legacy_environment = (
+            self._require_unscoped_subscription(preferred_provider)
+            if not project_id else (None, None)
+        )
         started = time.monotonic()
         provider = preferred_provider
         try:
@@ -640,7 +662,7 @@ class CliRunner:
                 candidates = (
                     self._eligible_provider_order(preferred_provider, project_id)
                     if project_id
-                    else [(None, None)]
+                    else [(legacy_installation, legacy_environment)]
                 )
                 if not candidates:
                     raise CliExecutionError(
@@ -776,6 +798,8 @@ class CliRunner:
                         "unified_exec",
                         "--config",
                         'web_search="disabled"',
+                        "--config",
+                        'forced_login_method="chatgpt"',
                         "--model",
                         CODEX_SLEEP_MODEL,
                         "--config",

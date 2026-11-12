@@ -20,7 +20,7 @@ jobs:
           - os: ubuntu-latest
             python: "3.12"
             distribution: true
-          - os: macos-14
+          - os: macos-15
             python: "3.12"
             distribution: true
           - os: windows-latest
