@@ -233,7 +233,7 @@ def test_codex_runner_uses_ephemeral_schema_output(monkeypatch):
         }
         assert disabled == {"shell_tool", "unified_exec"}
         assert 'web_search="disabled"' in command
-        assert command[command.index("--model") + 1] == "gpt-5.6-terra"
+        assert command[command.index("--model") + 1] == "gpt-6.1-terra"
         config_values = {
             command[index + 1] for index, value in enumerate(command[:-1]) if value == "--config"
         }
@@ -255,7 +255,7 @@ def test_codex_runner_uses_ephemeral_schema_output(monkeypatch):
         }
     )
     assert result["ok"] and result["output"] == {"topics": []}
-    assert result["model"] == "gpt-5.6-terra"
+    assert result["model"] == "gpt-6.1-terra"
 
 
 def test_codex_runner_pins_project_scoped_codex_home(monkeypatch):
