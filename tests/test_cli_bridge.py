@@ -22,7 +22,7 @@ from dduo_solo_founder.schemas import MemoryConsolidationPayload
 def verified_legacy_subscription_for_isolated_runner_unit_tests(monkeypatch):
     # These tests mock CLI execution. Authentication refusal is exercised in
     # test_subscription_only.py, which does not install this fixture.
-    monkeypatch.setattr(cli_bridge.CliRunner, "_require_unscoped_subscription", staticmethod(lambda _p: None))
+    monkeypatch.setattr(cli_bridge.CliRunner, "_require_unscoped_subscription", staticmethod(lambda _p: (None, None)))
 
 
 SCHEMA = {

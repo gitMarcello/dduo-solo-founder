@@ -1,8 +1,24 @@
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from dduo_solo_founder import cli_bridge, client_readiness
+from dduo_solo_founder.client_installation import ClientCommand, ClientInstallation
+
+
+@pytest.fixture(autouse=True)
+def isolated_subscription_installation(monkeypatch):
+    def installation(provider):
+        return ClientInstallation(
+            family=provider,
+            surface_hint="cli",
+            config_dir=Path("/synthetic/profile") / provider,
+            management_command=ClientCommand(Path("/synthetic/bin") / provider),
+        )
+
+    monkeypatch.setattr(cli_bridge.CliRunner, "_installation", staticmethod(installation))
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])
@@ -56,11 +72,43 @@ def test_legacy_subscription_check_receives_the_same_clean_environment(monkeypat
     monkeypatch.setenv("CODEX_API_KEY", "synthetic-unused-key")
     monkeypatch.setenv("OPENAI_IDENTITY_TOKEN_FILE", "/synthetic/identity")
 
-    def status(provider, *, environment):
+    def status(provider, *, environment, installation):
         assert (
             "CODEX_API_KEY" not in environment and "OPENAI_IDENTITY_TOKEN_FILE" not in environment
         )
+        assert environment["CODEX_HOME"] == str(installation.config_dir)
         return SimpleNamespace(ready=True)
 
     monkeypatch.setattr(cli_bridge, "subscription_auth_status", status)
     cli_bridge.CliRunner._require_unscoped_subscription("codex")
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_legacy_execution_reuses_the_authenticated_installation_and_profile(monkeypatch, provider):
+    monkeypatch.setenv("CODEX_API_KEY", "synthetic-unused-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-unused-key")
+    authenticated = {}
+
+    def status(client, *, environment, installation):
+        assert client == provider
+        assert "CODEX_API_KEY" not in environment and "ANTHROPIC_API_KEY" not in environment
+        authenticated.update(installation=installation, environment=environment)
+        return SimpleNamespace(ready=True)
+
+    def run(client, prompt, schema, timeout, project_id, *, installation, environment):
+        assert client == provider and not project_id
+        assert installation is authenticated["installation"]
+        assert environment is authenticated["environment"]
+        return json.dumps({"synthetic": True}), "", {}
+
+    monkeypatch.setattr(cli_bridge, "subscription_auth_status", status)
+    monkeypatch.setattr(cli_bridge.CliRunner, "_run_provider", staticmethod(run))
+    result = cli_bridge.CliRunner().generate(
+        {
+            "provider": provider,
+            "instructions": "Synthetic",
+            "input": {},
+            "schema": {"type": "object", "properties": {}},
+        }
+    )
+    assert result["output"] == {"synthetic": True}
