@@ -1432,16 +1432,19 @@ async def test_client_event_batch_is_strict_idempotent_and_prices_at_occurrence_
 
 
 @pytest.mark.parametrize(
-    ("provider", "model", "expected"),
+    ("provider", "model", "expected", "pricing_version"),
     [
-        ("codex", "gpt-6.1-sol", "0.002620000000"),
-        ("claude", "claude-opus-5-5", "0.006040000000"),
-        ("claude", "claude-sonnet-5-5", "0.003020000000"),
-        ("claude", "claude-haiku-5-5", "0.000152000000"),
+        ("codex", "gpt-6.2-sol", "0.002620000000", "api-list-prices-2026-11-17"),
+        ("codex", "gpt-6.2-astra", "0.010480000000", "api-list-prices-2026-11-17"),
+        ("codex", "gpt-6.1-terra", "0.001310000000", "api-list-prices-2026-11-17"),
+        ("codex", "gpt-6.1-sol", "0.002620000000", "api-list-prices-2026-10-23"),
+        ("claude", "claude-opus-5-5", "0.006040000000", "api-list-prices-2026-10-23"),
+        ("claude", "claude-sonnet-5-5", "0.003020000000", "api-list-prices-2026-10-23"),
+        ("claude", "claude-haiku-5-5", "0.000152000000", "api-list-prices-2026-10-23"),
     ],
 )
-async def test_october_model_prices_reach_dashboard_without_repricing_history(
-    api_client, db_factory, provider, model, expected
+async def test_catalog_model_prices_reach_dashboard_without_repricing_history(
+    api_client, db_factory, provider, model, expected, pricing_version
 ):
     client, _ = api_client
     project = await create_project(client)
@@ -1463,7 +1466,8 @@ async def test_october_model_prices_reach_dashboard_without_repricing_history(
             "event_id": "agent.current-pricing", "provider": provider, "model": model,
             "measurement_source": "provider_reported", "input_tokens": 1_000,
             "cached_input_tokens": 200, "cache_write_input_tokens": 0,
-            "output_tokens": 100, "occurred_at": "2026-10-23T12:00:00+00:00",
+            "output_tokens": 100,
+            "occurred_at": f"{pricing_version.removeprefix('api-list-prices-')}T12:00:00+00:00",
         }]},
     )
     assert response.status_code == 202 and response.json() == {"accepted": 1}
@@ -1473,7 +1477,7 @@ async def test_october_model_prices_reach_dashboard_without_repricing_history(
     assert Decimal(summary["equivalent_api_cost_usd"]) == Decimal(expected) * 2
     assert summary["pricing_coverage"] == {"priced": 2, "unavailable": 0}
     assert summary["catalog_estimates"] == {
-        "samples": 1, "pricing_versions": ["api-list-prices-2026-10-23"],
+        "samples": 1, "pricing_versions": [pricing_version],
     }
     assert summary["by_provider_model"][0]["model"] == model
     assert summary["by_provider_model"][0]["catalog_estimates"] == summary["catalog_estimates"]
@@ -1493,7 +1497,7 @@ async def test_october_model_prices_reach_dashboard_without_repricing_history(
     by_key = {row.idempotency_key: row for row in rows}
     current = by_key["client:agent.current-pricing"]
     assert current.cost_usd == Decimal(expected)
-    assert current.pricing_version == "api-list-prices-2026-10-23"
+    assert current.pricing_version == pricing_version
     assert by_key["historical-unpriced"].cost_usd is None
     assert by_key["historical-unpriced"].pricing_version is None
 

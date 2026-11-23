@@ -2,7 +2,7 @@
 
 # dDuo Solo Founder: complete guide
 
-Overview for `0.2.0-beta.5`. Use the linked runbooks for exact commands and
+Overview for `0.2.0-beta.6`. Use the linked runbooks for exact commands and
 recovery procedures; use the [README](../README.md) for copyable setup prompts.
 
 ## 1. What the founder gets
@@ -116,7 +116,7 @@ revisions in PostgreSQL. Historical queries help with elliptical requests or
 an empty successful search; there is no fixed quota of memories to emit.
 
 One project-owned automatic executor prefers the client established by the
-first supported project chat. Codex uses `gpt-5.6-terra` with medium reasoning.
+first supported project chat. Codex uses `gpt-6.1-terra` with medium reasoning.
 Codex and Claude turns share one queue while retaining their source client.
 Batches contain at most eight turns and 40,000 characters. Native Codex and
 Claude hooks trigger routine consolidation after eight pending turns or twenty

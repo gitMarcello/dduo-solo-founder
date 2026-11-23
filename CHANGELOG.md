@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0-beta.6 — Beta 6
+
+- Add exact GPT-6.2 Astra, GPT-6.2 Sol and GPT-6.1 Terra API-equivalent pricing
+  entries verified on 2026-11-17, including cache, long-context and request
+  limits. Keep historical price snapshots and persisted costs unchanged.
+- Use GPT-6.1 Terra with medium reasoning for Codex memory consolidation.
+- Require verified subscription authentication on every generation entry point,
+  including legacy requests; execute with the exact installation and profile
+  checked, without inheriting paid API or workload-identity credentials.
+- Add an optional Personal Memory publisher after consolidation, with transactional
+  outbox, stable provenance, claim versions and safe retries.
+- Add device-side, project-approved personal recall with a 12% default quota,
+  high similarity threshold and graceful timeout.
+- Keep bridge credentials outside project data and shared backups. The
+  experimental bridge is off by default. See `docs/personal-memory.it.md` for setup.
+- Skip personal recall when a session or turn is off record or its privacy
+  status is unavailable.
+- Recognize Codex expired or reused refresh credentials in failed JSONL turns
+  as requiring sign-in, without confusing optional MCP authentication failures
+  with the memory executor's login. Stop automatic retries until reconnection.
+- Label saved subscriptions as saved logins in Setup and keep an explicit
+  reconnect action available. A reconnect starts the official, project-scoped
+  sign-in even when the CLI still reports a saved subscription.
+
 ## 0.2.0-beta.5 — Beta 5
 
 - Estimate previously unpriced interactive and sleep usage in dashboard

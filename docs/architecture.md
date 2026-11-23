@@ -2,7 +2,7 @@
 
 # Architecture
 
-Technical reference for `v0.2.0-beta.5`.
+Technical reference for `v0.2.0-beta.6`.
 
 dDuo Solo Founder is a project-isolated operating memory for Codex and Claude
 Code. A project can run locally or on an authenticated VPS; its UI is
@@ -64,7 +64,7 @@ session sets a project preference; immediately before each sleep pass the bridge
 uses that verified host subscription, falling back to the other verified host
 subscription only when the preferred login or executable is unavailable. It
 does not switch subscriptions for a rate limit, timeout or invalid model output.
-Codex runs pin `gpt-5.6-terra` with medium reasoning. Both runners have no
+Codex runs pin `gpt-6.1-terra` with medium reasoning. Both runners have no
 shell/exec tools, web search or project checkout, so untrusted memory text
 cannot turn consolidation into a credential-reading agent.
 

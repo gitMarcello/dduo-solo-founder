@@ -9,6 +9,7 @@ from dduo_solo_founder.pricing import (
     API_PRICING_VERSION,
     LATE_SEPTEMBER_API_PRICING_VERSION,
     MODEL_PRICES,
+    NOVEMBER_API_PRICING_VERSION,
     OCTOBER_API_PRICING_VERSION,
     api_equivalent_cost,
     embedding_price,
@@ -354,6 +355,27 @@ def test_astra_long_context_prices_the_whole_request_without_double_counting():
     ("model", "rates", "short_cost", "long_cost", "version"),
     [
         (
+            "gpt-6.2-astra",
+            ("8", "0.40", "10", "40"),
+            "1.856",
+            "3.512016",
+            NOVEMBER_API_PRICING_VERSION,
+        ),
+        (
+            "gpt-6.2-sol",
+            ("2", "0.10", "2.50", "10"),
+            "0.464",
+            "0.878004",
+            NOVEMBER_API_PRICING_VERSION,
+        ),
+        (
+            "gpt-6.1-terra",
+            ("1", "0.05", "1.25", "5"),
+            "0.232",
+            "0.439002",
+            NOVEMBER_API_PRICING_VERSION,
+        ),
+        (
             "gpt-6.1-sol",
             ("2", "0.10", "2.50", "10"),
             "0.464",
@@ -424,6 +446,29 @@ def test_new_model_entries_do_not_reprice_older_models_or_guess_suffixes():
                             ("claude", "claude-sonnet-5-5"), ("claude", "claude-haiku-5-5")]:
         assert resolve_model_price(provider, f"{model}-future") is None
     assert resolve_model_price("codex", "gpt-6.1") is None
+    assert resolve_model_price("codex", "gpt-6.2") is None
+    assert resolve_model_price("codex", "gpt-6.2-terra") is None
+    for model in ("gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra"):
+        assert resolve_model_price("codex", model).pricing_version == NOVEMBER_API_PRICING_VERSION
+        assert resolve_model_price("codex", f"{model}-future") is None
+    assert resolve_model_price("codex", "gpt-6.1-sol").pricing_version == OCTOBER_API_PRICING_VERSION
+
+
+@pytest.mark.parametrize("model,cost", [
+    ("gpt-6.2-astra", "22.432"),
+    ("gpt-6.2-sol", "5.608"),
+    ("gpt-6.1-terra", "2.804"),
+])
+def test_november_models_enforce_the_exact_input_and_output_limits(model, cost):
+    usage = dict(provider="codex", model=model, cached_input_tokens=0, cache_write_input_tokens=0)
+    at_limit = api_equivalent_cost(**usage, input_tokens=922_000, output_tokens=128_000)
+    assert at_limit is not None and at_limit.cost_usd == Decimal(cost)
+    assert api_equivalent_cost(**usage, input_tokens=922_001, output_tokens=0) is None
+    assert api_equivalent_cost(**usage, input_tokens=0, output_tokens=128_001) is None
+    # Cache hits are still input, and cannot hide an impossible prompt size.
+    assert api_equivalent_cost(
+        **{**usage, "cached_input_tokens": 922_001}, input_tokens=922_001, output_tokens=0,
+    ) is None
 
 
 @pytest.mark.parametrize(

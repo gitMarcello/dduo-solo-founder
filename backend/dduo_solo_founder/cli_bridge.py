@@ -468,8 +468,20 @@ def classify_cli_failure(provider: str, stdout: str, stderr: str) -> CliExecutio
     result = str(envelope.get("result") or "")
     diagnostic = _redacted_cli_diagnostic(result, stderr, stdout)
     raw = f"{stdout}\n{result}\n{stderr}".casefold()
+    auth_output = raw
+    if provider == "codex":
+        # Optional MCP servers may report their own authentication errors.
+        # Prefer the failed model turn when Codex emits its JSONL event stream.
+        for line in stdout.splitlines():
+            event = _json_envelope(line)
+            error = event.get("error")
+            if event.get("type") == "turn.failed" and isinstance(error, dict):
+                message = str(error.get("message") or "")
+                code = str(error.get("code") or "")
+                if message or code:
+                    auth_output = f"{message}\n{code}".casefold()
     if status in {401, 403} or any(
-        marker in raw
+        marker in auth_output
         for marker in (
             "failed to authenticate",
             "authentication is expired",
@@ -479,6 +491,12 @@ def classify_cli_failure(provider: str, stdout: str, stderr: str) -> CliExecutio
             "login required",
             "please log in",
             "not authenticated",
+            "refresh token was already used",
+            "access token could not be refreshed",
+            "please log out and sign in again",
+            "provided authentication token is expired",
+            "token_expired",
+            "refresh_token_reused",
         )
     ):
         return CliExecutionError(
@@ -656,9 +674,8 @@ class CliRunner:
         provider = preferred_provider
         try:
             with self._lock:
-                # Legacy direct bridge callers have no project identity.  They
-                # retain their explicit provider behaviour; dDuo sleep jobs
-                # always send a project id and therefore use host resolution.
+                # Unscoped legacy callers were subscription-checked above.
+                # Project jobs also resolve the host-owned isolated login.
                 candidates = (
                     self._eligible_provider_order(preferred_provider, project_id)
                     if project_id
@@ -1422,7 +1439,9 @@ class SetupService:
         with embedding_key_lock(project_id):
             save_project_secrets(project_id, {"OPENAI_API_KEY": value})
 
-    def start_auth(self, provider: str, project_root: str | None = None) -> dict[str, Any]:
+    def start_auth(
+        self, provider: str, project_root: str | None = None, *, force: bool = False
+    ) -> dict[str, Any]:
         provider = provider.strip().lower()
         if provider not in {"claude", "codex"}:
             raise ValueError("Unknown provider")
@@ -1437,7 +1456,7 @@ class SetupService:
             return {"status": "waiting", "provider": provider}
         current = self._subscription_status(provider, project_id=project_id, fresh=True)
         memory_status = self._memory_status(selected[0] if selected else None)
-        if current.ready and not self._provider_auth_required(memory_status, provider):
+        if current.ready and not force and not self._provider_auth_required(memory_status, provider):
             with self._lock:
                 previous = self._auth.get(attempt_key)
                 if previous is not None and previous.error:
@@ -1772,6 +1791,7 @@ def _setup_html() -> str:
                   systemTitle: 'System status',
                   systemDescription: 'One of Codex or Claude is enough for sleep. The project prefers the client that started it, then uses the other verified host subscription only when needed.',
                   connected: 'Connected',
+                  savedLogin: 'Saved login',
                   waiting: 'Waiting',
                   genericError: 'Setup could not complete. Try again.',
                   errorInvalidOpenAI: 'Enter a valid OpenAI embeddings key.',
@@ -1861,6 +1881,7 @@ def _setup_html() -> str:
                   systemTitle: 'Stato del sistema',
                   systemDescription: 'Per il sonno basta Codex o Claude. Il progetto preferisce il client che lo ha avviato e usa l’altro abbonamento verificato sull’host solo quando necessario.',
                   connected: 'Connesso',
+                  savedLogin: 'Accesso salvato',
                   waiting: 'In attesa',
                   genericError: 'Non è stato possibile completare la configurazione. Riprova.',
                   errorInvalidOpenAI: 'Inserisci una chiave valida per gli embedding OpenAI.',
@@ -2055,9 +2076,9 @@ def _setup_html() -> str:
                 return node;
               }
 
-              function renderRow(id, title, detail, ready, label, action) {
+              function renderRow(id, title, detail, ready, label, action, actionWhenReady = false, readyLabel = t('connected')) {
                 const host = document.getElementById(id);
-                const signature = JSON.stringify([language, title, detail, ready, label, Boolean(action)]);
+                const signature = JSON.stringify([language, title, detail, ready, label, Boolean(action), actionWhenReady, readyLabel]);
                 if (host.dataset.signature === signature) return;
                 const row = element('div', '', 'row');
                 const copy = element('div');
@@ -2065,13 +2086,14 @@ def _setup_html() -> str:
                 copy.append(element('small', detail, ready ? 'ok' : 'wait'));
                 row.append(copy);
                 if (ready) {
-                  row.append(element('span', t('connected'), 'status ok'));
-                } else if (action) {
+                  row.append(element('span', readyLabel, 'status ok'));
+                }
+                if (action && (!ready || actionWhenReady)) {
                   const button = element('button', label);
                   button.type = 'button';
                   button.onclick = action;
                   row.append(button);
-                } else {
+                } else if (!ready) {
                   row.append(element('span', label, 'status wait'));
                 }
                 host.replaceChildren(row);
@@ -2275,7 +2297,7 @@ def _setup_html() -> str:
 
               async function connect(provider) {
                 try {
-                  await call('/v1/setup/auth', { provider });
+                  await call('/v1/setup/auth', { provider, force: true });
                   showNotice(t('signInNotice', { provider: provider === 'claude' ? 'Claude' : 'Codex' }));
                   await refresh(true);
                 } catch (error) {
@@ -2368,8 +2390,10 @@ def _setup_html() -> str:
                             ? t('clientReconnect')
                             : client.ready ? t('clientReady') : t('clientIdle'),
                     client.ready && !client.resume_failed,
-                    t(optionalFallback ? 'optional' : client.resume_failed ? 'memoryRetry' : client.reason === 'auth_required' ? 'reconnect' : 'connect'),
+                    t(optionalFallback ? 'optional' : client.resume_failed ? 'memoryRetry' : client.ready || client.reason === 'auth_required' ? 'reconnect' : 'connect'),
                     optionalFallback ? null : () => client.resume_failed ? resumeMemory(provider) : connect(provider),
+                    true,
+                    t('savedLogin'),
                   );
                   if (client.resume_ready) {
                     void resumeMemory(provider);
@@ -2794,6 +2818,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     setup.start_auth(
                         str(body.get("provider") or ""),
                         str(root),
+                        force=body.get("force") is True,
                     ),
                 )
             elif parsed.path == "/v1/setup/docker":

@@ -3,7 +3,7 @@
 <a id="troubleshooting"></a>
 # Risoluzione dei problemi
 
-Guida per dDuo Solo Founder `0.2.0-beta.5`. Nell'uso normale non dovrebbe
+Guida per dDuo Solo Founder `0.2.0-beta.6`. Nell'uso normale non dovrebbe
 servire una diagnosi tecnica: il lavoro del progetto resta disponibile anche
 quando la memoria locale o remota è temporaneamente irraggiungibile.
 
@@ -187,7 +187,15 @@ lascia esplicitamente l'alternativa di continuare temporaneamente. Memorie e
 turni acquisiti restano salvati; il sonno fermo non significa, da solo, che
 anche salvataggio e recupero siano interrotti.
 
-Dopo aver scelto di risolvere, premi **Connetti** in Setup e completa l'accesso
+**Accesso salvato** in Setup significa che la CLI ha trovato credenziali
+dell'abbonamento; non prova che possano ancora eseguire un consolidamento.
+**Ricollega** resta disponibile per avviare un nuovo accesso esplicito.
+Credenziali di rinnovo Codex scadute o già usate, segnalate dal turno del modello
+fallito, richiedono la riconnessione invece di tentativi tecnici automatici.
+Gli errori di autenticazione dei server MCP opzionali restano distinti dal
+fallimento del turno del modello.
+
+Dopo aver scelto di risolvere, premi **Connetti** o **Ricollega** in Setup e completa l'accesso
 ufficiale Codex o Claude nello stato host privato del progetto. Basta un login
 concluso e verificato per riprendere i lavori: aprire Setup non li riavvia.
 Se la richiesta di ripresa fallisce, puoi ritentarla esplicitamente.

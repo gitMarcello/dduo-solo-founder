@@ -107,10 +107,10 @@ plugin, hook e MCP.
 
 - `main` è protetto: non inviare push diretti, nemmeno da amministratore.
 - Usare un branch breve, aprire una PR e mantenerla aggiornata con `main`.
-- Unire soltanto dopo il successo del `CI gate`, che aggrega matrice Python
-  inclusa Windows, frontend, browser e Compose.
-- Il flusso solo founder non impone un numero di approvazioni ma non aggira
-  controlli falliti o pendenti.
+- Prima del merge, eseguire in locale i controlli pertinenti sulla revisione
+  della PR. Registrare nella PR comandi, esiti e limiti della verifica.
+  Per le candidate seguire la procedura per le release Beta qui sopra.
+- Il flusso solo founder non impone un numero minimo di approvazioni.
 - Descrivere comportamento visibile e modalità di errore.
 - Aggiungere una migrazione Alembic per ogni modifica di schema.
 - Non committare credenziali, memorie progetto, volumi o chiavi benchmark.

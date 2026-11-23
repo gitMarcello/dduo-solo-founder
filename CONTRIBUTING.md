@@ -109,10 +109,10 @@ chat, or start a new Claude session, to reload plugins, hooks and MCP.
 - `main` is protected. Never push to it directly, including as an administrator.
 - Work on a short-lived branch, open a pull request, and keep it up to date with
   `main`.
-- Merge only after the required `CI gate` succeeds. It aggregates the complete
-  Python matrix, including Windows, plus frontend, browser and Compose checks.
-- The solo-founder workflow requires no approval count, but it never bypasses a
-  failed or pending CI result.
+- Run the relevant checks locally on the pull request revision before merging.
+  Record the commands, results and verification limits in the pull request.
+  For release candidates, follow the Beta release checklist above.
+- The solo-founder workflow has no minimum approval count.
 - Describe the user-visible behavior and failure modes.
 - Add an Alembic migration for every database schema change.
 - Never commit credentials, project memories, Docker volumes or benchmark keys.

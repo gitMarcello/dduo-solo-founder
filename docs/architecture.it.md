@@ -2,7 +2,7 @@
 
 # Architettura
 
-Riferimento tecnico per `v0.2.0-beta.5`.
+Riferimento tecnico per `v0.2.0-beta.6`.
 
 dDuo Solo Founder è una memoria operativa isolata per progetto, condivisa tra
 Codex e Claude Code. Può risiedere sul computer o su una VPS autenticata; la
@@ -65,7 +65,7 @@ il bridge usa quell'abbonamento verificato sull'host e ricorre all'altro già
 verificato solo se login o eseguibile preferito non sono disponibili. Non cambia
 abbonamento per aggirare limiti, timeout o output non valido.
 
-Le esecuzioni Codex usano `gpt-5.6-terra` con ragionamento medio. Entrambi i
+Le esecuzioni Codex usano `gpt-6.1-terra` con ragionamento medio. Entrambi i
 runner sono effimeri, senza shell/exec, ricerca web o checkout: il modello
 riceve input limitato e schema strutturato, senza strumenti per leggere le
 credenziali dell'host.

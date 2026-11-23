@@ -628,7 +628,9 @@ class SleepGenerationError(SleepProviderError):
 SLEEP_EXECUTOR_PROVIDERS = frozenset({"codex", "claude"})
 
 
-def sleep_executor_provider(project: Project | None = None, *, source_client: str | None = None) -> str:
+def sleep_executor_provider(
+    project: Project | None = None, *, source_client: str | None = None
+) -> str:
     """Return one project's stable preferred sleep executor.
 
     The bridge resolves this preference against the subscriptions available on
@@ -1103,7 +1105,7 @@ def _head_tail(value: str, limit: int) -> str:
     marker = "\n\n[... earlier middle content omitted ...]\n\n"
     available = max(limit - len(marker), 0)
     head = available // 2
-    return f"{value[:head]}{marker}{value[-(available - head):]}"[:limit]
+    return f"{value[:head]}{marker}{value[-(available - head) :]}"[:limit]
 
 
 def _normalized_prompt_fragments(
@@ -1128,10 +1130,7 @@ def _normalized_prompt_fragments(
 
 
 def _fragment_header(fragment: dict[str, object]) -> str:
-    return (
-        f"[user_prompt_fragment {fragment['ordinal']}; "
-        f"message_id={fragment['message_id']}]\n"
-    )
+    return f"[user_prompt_fragment {fragment['ordinal']}; message_id={fragment['message_id']}]\n"
 
 
 def _bounded_fragment_content(value: str, limit: int) -> str:
@@ -1179,9 +1178,7 @@ def _presented_prompt_fragments(
                 selected = proposed
                 seen.add(identity)
 
-    overhead = sum(len(_fragment_header(item)) for item in selected) + max(
-        len(selected) - 1, 0
-    ) * 2
+    overhead = sum(len(_fragment_header(item)) for item in selected) + max(len(selected) - 1, 0) * 2
     remaining = max(limit - overhead, 0)
     allocations = [0] * len(selected)
     active = {index for index, item in enumerate(selected) if str(item["content"])}
@@ -1219,9 +1216,7 @@ def _render_prompt_fragments(
     *,
     limit: int = MAX_MESSAGE_CHARS,
 ) -> tuple[str, list[dict[str, object]]]:
-    presented = _presented_prompt_fragments(
-        turn, message_ids, fragments, limit=limit
-    )
+    presented = _presented_prompt_fragments(turn, message_ids, fragments, limit=limit)
     rendered = "\n\n".join(
         f"[user_prompt_fragment {fragment['ordinal']}; message_id={fragment['message_id']}]\n"
         f"{fragment['content']}"
@@ -1349,9 +1344,7 @@ async def _prompt_fragments_by_turn(
         if not turn_id:
             continue
         content = str(payload.get("text") or "") if isinstance(payload, dict) else ""
-        result.setdefault(turn_id, []).append(
-            {"message_id": str(event_id), "content": content}
-        )
+        result.setdefault(turn_id, []).append({"message_id": str(event_id), "content": content})
     return result
 
 
@@ -1471,9 +1464,7 @@ def _bounded_turn_batch(turns: list[dict], limit: int) -> list[dict]:
             user = turn["user_message"]
             assistant = turn["assistant_message"]
             user["content"] = _head_tail(user["content"], max(2_000, limit // 3))
-            assistant["content"] = _head_tail(
-                assistant["content"], max(2_000, limit // 3)
-            )
+            assistant["content"] = _head_tail(assistant["content"], max(2_000, limit // 3))
             user["artifacts"] = [
                 {**artifact, "extracted_text": artifact.get("extracted_text", "")[:1_000]}
                 for artifact in user.get("artifacts", [])[:2]
@@ -1603,13 +1594,9 @@ async def process_one_sleep_job(
 
         artifacts_by_turn = await _artifacts_by_turn(db, [turn.id for turn in turns])
         message_ids_by_turn = await _message_ids_by_turn(db, [turn.id for turn in turns])
-        prompt_fragments_by_turn = await _prompt_fragments_by_turn(
-            db, [turn.id for turn in turns]
-        )
+        prompt_fragments_by_turn = await _prompt_fragments_by_turn(db, [turn.id for turn in turns])
         settings = get_settings()
-        batch_char_limit = max(
-            1_000, getattr(settings, "sleep_batch_char_limit", MAX_BATCH_CHARS)
-        )
+        batch_char_limit = max(1_000, getattr(settings, "sleep_batch_char_limit", MAX_BATCH_CHARS))
         message_char_limit = min(MAX_MESSAGE_CHARS, max(2_000, batch_char_limit // 3))
         serialized = [
             _serialize_turn(
@@ -1681,11 +1668,24 @@ async def process_one_sleep_job(
         generation_started = perf_counter()
         generation: SleepGeneration | None = None
         try:
+            from .personal_memory import publishing_enabled
+
+            personal_enabled = publishing_enabled(job.project_id)
+            personal_instructions = (
+                "\nAn authorized personal-memory bridge is enabled. Each topic may include personal_events "
+                "(empty by default): select only information materially useful to the person across projects. "
+                "Use concise text, target_node_type/key of a memory action in this topic, operation upsert/withdraw, "
+                "and epistemic_status confirmed/reported/estimated/hypothesis/disputed. Preserve uncertainty. "
+                "Do not export technical detail, secrets, telemetry or inferred mental/financial states. "
+                "A cost, release or milestone is relevant only when supported by the source; forecasts stay estimates."
+                if personal_enabled
+                else ""
+            )
             generation = await _generate_sleep(
                 provider,
                 provider_name=job.executor_preference,
                 task="memory_consolidation",
-                instructions=MEMORY_CONSOLIDATION_INSTRUCTIONS,
+                instructions=MEMORY_CONSOLIDATION_INSTRUCTIONS + personal_instructions,
                 payload=consolidation_payload,
                 schema=MemoryConsolidationPayload.model_json_schema(),
                 project_id=job.project_id,
@@ -1843,13 +1843,18 @@ async def process_one_sleep_job(
                 "bridge_unavailable", "The memory batch was interrupted before it could finish."
             )
         totals = {
-            "topics": 0, "created": 0, "replaced": 0, "status_updated": 0, "skipped": 0,
+            "topics": 0,
+            "created": 0,
+            "replaced": 0,
+            "status_updated": 0,
+            "skipped": 0,
             "language_warnings": language_warnings,
         }
         for item in planned:
             serialized_actions = []
+            applied_personal_targets = {}
             for action, memory_language in item["actions"]:
-                _, outcome = await apply_sleep_action(
+                applied_memory, outcome = await apply_sleep_action(
                     db,
                     job=current,
                     action=action,
@@ -1858,8 +1863,25 @@ async def process_one_sleep_job(
                     memory_language=memory_language,
                 )
                 totals[outcome] += 1
+                applied_personal_targets[(action.target_node_type, action.target_node_key)] = (
+                    applied_memory
+                )
                 serialized_actions.append(action.model_dump())
             topic = item["topic"]
+            if personal_enabled:
+                from .personal_memory import enqueue_personal_event
+
+                for proposal in topic.personal_events:
+                    target = applied_personal_targets.get(
+                        (proposal.target_node_type, proposal.target_node_key)
+                    )
+                    if target is None:
+                        raise SleepProviderError(
+                            "invalid_model_output", "Unknown personal-event memory target."
+                        )
+                    await enqueue_personal_event(
+                        db, current.project_id, current.id, target, proposal
+                    )
             db.add(
                 SleepTopic(
                     project_id=current.project_id,

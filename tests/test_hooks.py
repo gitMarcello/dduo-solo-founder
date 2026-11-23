@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from conftest import assert_private_file
-from dduo_solo_founder import hooks, manual_cache, project_config
+from dduo_solo_founder import hooks, manual_cache, personal_memory, project_config
 from dduo_solo_founder.client_http import ClientUpgradeRequired, CompatibilityDirective
 from dduo_solo_founder.context_budget import context_units, utf16_units
 
@@ -432,6 +432,59 @@ def test_user_prompt_opens_turn_retrieves_compact_context_and_never_auth_gates(
         content=context,
         occurrence_id="m1",
     )
+
+
+@pytest.mark.parametrize(
+    ("session_off_record", "turn_off_record", "recall_expected"),
+    [
+        (False, False, True),
+        (True, False, False),
+        (False, True, False),
+        (False, None, False),
+        (None, False, False),
+    ],
+)
+def test_personal_recall_requires_recordable_session_and_turn(
+    monkeypatch, tmp_path, session_off_record, turn_off_record, recall_expected
+):
+    monkeypatch.setattr(hooks, "HOOK_STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(hooks, "load_project", lambda _: project())
+    responses = iter(
+        [
+            Response({"id": "session", "off_record": session_off_record}),
+            Response(
+                {
+                    "turn": {"id": "turn-1", "off_record": turn_off_record},
+                    "project": project(),
+                    "memory_status": {"state": "updated"},
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(hooks.httpx, "post", lambda *args, **kwargs: next(responses))
+    queries = []
+
+    def recall(_root, _project_id, query):
+        queries.append(query)
+        return []
+
+    monkeypatch.setattr(personal_memory, "recall", recall)
+    token_prefix = "dduo_link_"
+    output = hook_input(
+        monkeypatch,
+        {
+            "cwd": str(tmp_path),
+            "client": "codex",
+            "session_id": "s1",
+            "prompt": "Review " + token_prefix + "x" * 43,
+        },
+    )
+
+    hooks.user_prompt_submit()
+
+    context = json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
+    assert founder_items(context, "profile")[0]["payload"]["name"] == "ExampleApp"
+    assert queries == (["Review " + token_prefix + "*" * 43] if recall_expected else [])
 
 
 def test_steering_prompts_keep_one_turn_and_distinct_delivery_observations(monkeypatch, tmp_path):
