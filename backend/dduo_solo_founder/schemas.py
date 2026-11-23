@@ -378,10 +378,14 @@ class ContextDeliveryObservation(BaseModel):
             raise ValueError("snapshot delivery must replace foundation and Work")
         if self.kind == "fallback" and (self.foundation_changed or self.work_changed):
             raise ValueError("fallback delivery cannot advance foundation or Work")
-        if self.kind == "delta" and (
-            self.foundation_changed,
-            self.work_changed,
-        ) != expected_changes[self.reason]:
+        if (
+            self.kind == "delta"
+            and (
+                self.foundation_changed,
+                self.work_changed,
+            )
+            != expected_changes[self.reason]
+        ):
             raise ValueError("delta change flags do not match its delivery reason")
         if self.reused_characters > self.reused_utf8_bytes:
             raise ValueError("reused_characters cannot exceed reused_utf8_bytes")
@@ -661,9 +665,7 @@ class ClientTelemetryBatch(BaseModel):
                 item = AgentUsageObservation.model_validate(raw_item)
                 usage_items.append(item)
             if item.event_id in event_ids:
-                raise ValueError(
-                    "client telemetry event_id values must be unique within a batch"
-                )
+                raise ValueError("client telemetry event_id values must be unique within a batch")
             event_ids.add(item.event_id)
         return usage_items
 
@@ -1076,11 +1078,23 @@ class BatchMemoryPlanningPayload(BaseModel):
     topic_plans: list[TopicMemoryPlanPayload] = Field(max_length=50)
 
 
+class PersonalEventProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_node_type: Literal["episode", "reusable_fact", "heuristic"]
+    target_node_key: str = Field(min_length=1, max_length=500)
+    operation: Literal["upsert", "withdraw"] = "upsert"
+    text: str = Field(min_length=1, max_length=16000)
+    epistemic_status: Literal["confirmed", "reported", "estimated", "hypothesis", "disputed"] = (
+        "reported"
+    )
+
+
 class ConsolidatedTopicPayload(SleepTopicPayload):
     """A topic and its durable-memory decision from a single model call."""
 
     language: MemoryLanguage
     memory_actions: list[MemoryActionPayload] = Field(default_factory=list, max_length=100)
+    personal_events: list[PersonalEventProposal] = Field(default_factory=list, max_length=20)
 
 
 class MemoryConsolidationPayload(BaseModel):

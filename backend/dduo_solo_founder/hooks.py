@@ -44,7 +44,10 @@ from dduo_solo_founder.observability import (
     estimated_tokens_for_text,
 )
 from dduo_solo_founder.operating_contract import COFOUNDER_CONTRACT, TASK_CONTRACT
-from dduo_solo_founder.connection_health import CONFIGURATION_CHOICE_INSTRUCTION, sleep_connection_notice
+from dduo_solo_founder.connection_health import (
+    CONFIGURATION_CHOICE_INSTRUCTION,
+    sleep_connection_notice,
+)
 from dduo_solo_founder.project_activation import setup_declined
 from dduo_solo_founder.project_config import (
     dashboard_item_url,
@@ -52,6 +55,7 @@ from dduo_solo_founder.project_config import (
     load_project,
     portable_file_lock,
 )
+
 HOOK_STATE_DIR = Path.home() / ".config" / "dduo-solo-founder" / "hook-state"
 HOOK_CONTEXT_RENDER_VERSION = "hook-context-v6"
 HOOK_FALLBACK_RENDER_VERSION = "hook-fallback-v3"
@@ -295,9 +299,7 @@ def _state_turn_generation(state: dict) -> str | None:
     return candidate if isinstance(candidate, str) and candidate else None
 
 
-def merge_state_update(
-    path: Path, before: dict, after: dict, *, lock_timeout: float = 10
-) -> dict:
+def merge_state_update(path: Path, before: dict, after: dict, *, lock_timeout: float = 10) -> dict:
     """Apply one hook mutation without discarding concurrent queue additions.
 
     Hook processes are short-lived and may overlap. Atomic replace prevents a
@@ -512,7 +514,8 @@ def _request(transport: str | ProjectHttpClient, method: str, path: str, **kwarg
 def flush_client_telemetry(
     transport: str | ProjectHttpClient,
     project_id: str,
-    *, deadline: float | None = None,
+    *,
+    deadline: float | None = None,
 ) -> None:
     """Best-effort delivery; enforcement never depends on observability upload."""
     spool = ClientTelemetrySpool()
@@ -609,11 +612,14 @@ def enqueue_pending_codex_usage(source: dict, *, project_id: str) -> int:
     external_session = source.get("external_session")
     external_turn = source.get("external_turn")
     cursor = source.get("cursor")
-    if not all(isinstance(item, str) and item for item in (
-        transcript_path,
-        external_session,
-        external_turn,
-    )) or not isinstance(cursor, dict):
+    if not all(
+        isinstance(item, str) and item
+        for item in (
+            transcript_path,
+            external_session,
+            external_turn,
+        )
+    ) or not isinstance(cursor, dict):
         # A malformed private source cannot become valid on a retry.
         return 0
     result = read_codex_transcript_usage_result(
@@ -643,7 +649,10 @@ def enqueue_pending_codex_usage(source: dict, *, project_id: str) -> int:
 
 
 def drain_pending_codex_usage(
-    state: dict, *, project_id: str, deadline: float | None = None,
+    state: dict,
+    *,
+    project_id: str,
+    deadline: float | None = None,
     max_sources: int | None = None,
 ) -> tuple[int, bool]:
     """Move durable sources in stable order without head-of-line blocking.
@@ -652,14 +661,15 @@ def drain_pending_codex_usage(
     after all of its events were durably enqueued (or a valid scan found none).
     """
     raw = state.get("pending_codex_usage")
-    pending = [dict(item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    pending = (
+        [dict(item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    )
     consumed = 0
     blocked = False
     remaining: list[dict] = []
     for index, source in enumerate(pending):
-        if (
-            (max_sources is not None and index >= max_sources)
-            or (deadline is not None and time.monotonic() >= deadline)
+        if (max_sources is not None and index >= max_sources) or (
+            deadline is not None and time.monotonic() >= deadline
         ):
             remaining.extend(pending[index:])
             break
@@ -720,8 +730,12 @@ def stage_codex_transcript_cursor(
 
 
 def _session(
-    transport: str | ProjectHttpClient, project: dict, client: str, external_id: str,
-    *, timeout: float | httpx.Timeout = 10,
+    transport: str | ProjectHttpClient,
+    project: dict,
+    client: str,
+    external_id: str,
+    *,
+    timeout: float | httpx.Timeout = 10,
 ) -> dict:
     response = _request(
         transport,
@@ -796,7 +810,10 @@ def _commit_payload_has_response(payload: object) -> bool:
 
 
 def _record_stop_conflict(
-    state: dict, *, external_turn_id: str | None = None, turn_id: str | None = None,
+    state: dict,
+    *,
+    external_turn_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
     evidence = state.setdefault("lifecycle_evidence", {"version": 1})
     if isinstance(evidence, dict):
@@ -807,7 +824,10 @@ def _record_stop_conflict(
                 stop_evidence["external_turn_id"] = external_turn_id
             if turn_id is not None:
                 stop_evidence["turn_id"] = turn_id
-    print("dDuo: conflicting Stop answers received; the first captured answer was preserved.", file=sys.stderr)
+    print(
+        "dDuo: conflicting Stop answers received; the first captured answer was preserved.",
+        file=sys.stderr,
+    )
 
 
 def _merge_completion_snapshot(left: dict, right: dict, *, nested: bool) -> tuple[dict, bool]:
@@ -860,15 +880,19 @@ def _same_pending_commit(left: dict, right: dict) -> bool:
     idempotent even though it necessarily receives a new local timestamp.
     """
     ignored = {"revision", "queued_at"}
-    return (
-        {key: value for key, value in left.items() if key not in ignored}
-        == {key: value for key, value in right.items() if key not in ignored}
-    )
+    return {key: value for key, value in left.items() if key not in ignored} == {
+        key: value for key, value in right.items() if key not in ignored
+    }
 
 
 def queue_pending_commit(
-    state: dict, turn_id: str, payload: dict, binding_id: str | None = None,
-    *, external_turn_id: str | None = None, off_record: bool | None = None,
+    state: dict,
+    turn_id: str,
+    payload: dict,
+    binding_id: str | None = None,
+    *,
+    external_turn_id: str | None = None,
+    off_record: bool | None = None,
 ) -> dict:
     """Stage a completion before delivery and return its immutable snapshot.
 
@@ -1129,9 +1153,8 @@ def flush_spooled_turns(
     persisted = 0
     attempted = 0
     for path in HOOK_STATE_DIR.glob(f"{project['id']}-{client}-*.json"):
-        if (
-            (deadline is not None and time.monotonic() >= deadline)
-            or (max_items is not None and attempted >= max_items)
+        if (deadline is not None and time.monotonic() >= deadline) or (
+            max_items is not None and attempted >= max_items
         ):
             break
         state = read_state(path)
@@ -1159,7 +1182,9 @@ def flush_spooled_turns(
                 continue
             try:
                 attempted += 1
-                session_options = {"timeout": _recovery_timeout(deadline)} if deadline is not None else {}
+                session_options = (
+                    {"timeout": _recovery_timeout(deadline)} if deadline is not None else {}
+                )
                 session = _session(
                     transport, project, client, str(item["session_external_id"]), **session_options
                 )
@@ -1207,7 +1232,9 @@ def flush_spooled_turns(
                 persisted += 1
                 evidence = state.get("lifecycle_evidence")
                 stop_evidence = evidence.get("stop") if isinstance(evidence, dict) else None
-                if isinstance(stop_evidence, dict) and stop_evidence.get("external_turn_id") == item.get("external_turn_id"):
+                if isinstance(stop_evidence, dict) and stop_evidence.get(
+                    "external_turn_id"
+                ) == item.get("external_turn_id"):
                     stop_evidence["turn_id"] = str(turn.json()["turn"]["id"])
                     stop_evidence["server_committed_at"] = datetime.now().astimezone().isoformat()
             except Exception:
@@ -1221,8 +1248,11 @@ def flush_spooled_turns(
 
 
 def _recover_after_context(
-    project: dict, transport: str | ProjectHttpClient, client: str,
-    binding_id: str, path: Path,
+    project: dict,
+    transport: str | ProjectHttpClient,
+    client: str,
+    binding_id: str,
+    path: Path,
 ) -> None:
     """Bound maintenance after context emission; never spend retrieval's budget.
 
@@ -1240,8 +1270,13 @@ def _recover_after_context(
         merge_state_update(path, before, state, lock_timeout=1)
         _recover_one_pending_completion(project, transport, client, binding_id, path, deadline)
         flush_spooled_turns(
-            project, transport, client, binding_id, allow_legacy=False,
-            deadline=deadline, max_items=1,
+            project,
+            transport,
+            client,
+            binding_id,
+            allow_legacy=False,
+            deadline=deadline,
+            max_items=1,
         )
         if time.monotonic() < deadline:
             flush_client_telemetry(transport, str(project["id"]), deadline=deadline)
@@ -1252,8 +1287,12 @@ def _recover_after_context(
 
 
 def _recover_one_pending_completion(
-    project: dict, transport: str | ProjectHttpClient, client: str,
-    binding_id: str, current_path: Path, deadline: float,
+    project: dict,
+    transport: str | ProjectHttpClient,
+    client: str,
+    binding_id: str,
+    current_path: Path,
+    deadline: float,
 ) -> None:
     """Recover one exact snapshot even when its original chat is no longer open.
 
@@ -1274,7 +1313,8 @@ def _recover_one_pending_completion(
         if (
             state.get("project_id") != str(project["id"])
             or state.get("binding_id") != binding_id
-            or not native_session or native_session != state.get("session_external_id")
+            or not native_session
+            or native_session != state.get("session_external_id")
         ):
             continue
         legacy = state_path(str(project["id"]), client, native_session)
@@ -1290,13 +1330,19 @@ def _recover_one_pending_completion(
         if state.get("client") != client or (path != expected and not sidecar):
             continue
         if not any(
-            item.get("binding_id") == binding_id and _commit_payload_has_response(item.get("payload"))
+            item.get("binding_id") == binding_id
+            and _commit_payload_has_response(item.get("payload"))
             for item in _pending_commits(state)
         ):
             continue
         flush_pending_commits(
-            transport, state, binding_id, allow_legacy=False,
-            deadline=deadline, max_items=1, path=path,
+            transport,
+            state,
+            binding_id,
+            allow_legacy=False,
+            deadline=deadline,
+            max_items=1,
+            path=path,
         )
         return  # At most one network attempt across every session and sidecar.
 
@@ -1473,9 +1519,7 @@ def _empty_measurement_record() -> dict[str, int]:
 def _valid_measurement_record(record: dict) -> bool:
     keys = ("items", "characters", "utf16_units", "utf8_bytes", "budget_units")
     if any(
-        isinstance(record.get(key), bool)
-        or not isinstance(record.get(key), int)
-        or record[key] < 0
+        isinstance(record.get(key), bool) or not isinstance(record.get(key), int) or record[key] < 0
         for key in keys
     ):
         return False
@@ -1745,9 +1789,7 @@ def _filter_undelivered_prompt_work(
     delivered = baseline.get("delivered_work_references", {})
     for key, component in (("plans", "plans"), ("tasks", "tasks")):
         known = {
-            str(value)
-            for value in delivered.get(component, [])
-            if isinstance(value, str) and value
+            str(value) for value in delivered.get(component, []) if isinstance(value, str) and value
         }
         items = context.get(key)
         context[key] = (
@@ -2018,6 +2060,18 @@ def founder_context_fragments(
         if fragment is not None:
             fragments.append(fragment)
 
+    # Personal evidence is already project-approved, quota-limited and untrusted.
+    for memory in briefing.get("personal_memories", []):
+        if isinstance(memory, dict) and memory.get("id"):
+            fragments.append(
+                ContextFragment(
+                    component="personal_memories",
+                    priority=60,
+                    reference=str(memory["id"]),
+                    payload=memory,
+                )
+            )
+
     task_counts = briefing.get("task_counts")
     if isinstance(task_counts, dict) and task_counts:
         fragments.append(
@@ -2076,8 +2130,23 @@ def founder_context_fragments(
 
 def compose_founder_context(briefing: dict, **values: str) -> ComposedContext:
     try:
+        fragments = founder_context_fragments(briefing, **values)
+        fixed = [f for f in fragments if f.component not in {"memories", "personal_memories"}]
+        capacity = max(
+            0, DEFAULT_CONTEXT_BUDGET - measure_fragment_sources(fixed).budget_units - 512
+        )
+        personal_limit = int(capacity * 0.12)
+        admitted = []
+        used = 0
+        for fragment in fragments:
+            if fragment.component == "personal_memories":
+                size = measure_fragment_sources([fragment]).budget_units
+                if used + size > personal_limit:
+                    continue
+                used += size
+            admitted.append(fragment)
         return compose_context(
-            founder_context_fragments(briefing, **values),
+            admitted,
             budget=DEFAULT_CONTEXT_BUDGET,
         )
     except (TypeError, ValueError):
@@ -2621,9 +2690,7 @@ def session_start() -> None:
                     prompt="",
                     baseline=baseline,
                 )
-            standing_contracts = (
-                COFOUNDER_CONTRACT + TASK_CONTRACT if foundation_changed else ""
-            )
+            standing_contracts = COFOUNDER_CONTRACT + TASK_CONTRACT if foundation_changed else ""
         composed = compose_founder_context(
             compact_briefing,
             contracts=SESSION_REFRESH_CONTRACT if baseline is not None else "",
@@ -2840,9 +2907,7 @@ def user_prompt_submit() -> None:
         session = _session(transport, project, client, external)
         internal_session_id = session["id"]
         session_off_record = bool(session.get("off_record"))
-        path, state = load_bound_state(
-            str(project["id"]), client, external, binding.binding_id
-        )
+        path, state = load_bound_state(str(project["id"]), client, external, binding.binding_id)
         if declared_turn is None:
             active = state.get("spooled_active")
             active_external_turn = (
@@ -2970,13 +3035,16 @@ def user_prompt_submit() -> None:
                     prompt=prompt,
                     baseline=baseline,
                 )
-            standing_contracts = (
-                COFOUNDER_CONTRACT + TASK_CONTRACT if foundation_changed else ""
-            )
+            standing_contracts = COFOUNDER_CONTRACT + TASK_CONTRACT if foundation_changed else ""
         setup_notice = ""
         if memory_status.get("state") != "connection_required":
             clear_setup_notice(str(project["id"]), client)
         memory_notice = _memory_notice(context, remote=binding.remote)
+        # An off-record turn remains private even after recording resumes for the session.
+        if session.get("off_record") is False and turn.get("off_record") is False:
+            from .personal_memory import recall
+
+            compact["personal_memories"] = recall(root, str(project["id"]), prompt)
         composed = compose_founder_context(
             compact,
             contracts=TURN_CONTRACT,
@@ -3194,7 +3262,10 @@ def user_prompt_submit() -> None:
             spool_persisted = prompt_spooled
         except Exception:
             pass
-        if not spool_persisted and fallback_context == compose_unavailable_context(fallback_message).content:
+        if (
+            not spool_persisted
+            and fallback_context == compose_unavailable_context(fallback_message).content
+        ):
             fallback_context = compose_unavailable_context(
                 "dDuo memory is unavailable for this turn. Offer check_memory_connection and help "
                 "restoring the project's connection; do not start local Setup for a remote binding. "
@@ -3220,8 +3291,13 @@ def user_prompt_submit() -> None:
 
 
 def _stage_stop(
-    path: Path, payload: dict, *, project_id: str, client: str,
-    external_session: str, binding_id: str,
+    path: Path,
+    payload: dict,
+    *,
+    project_id: str,
+    client: str,
+    external_session: str,
+    binding_id: str,
 ) -> dict | None:
     """Reread, correlate and durably stage exactly one completion under one lock."""
     with portable_file_lock(path, timeout=1):
@@ -3234,63 +3310,104 @@ def _stage_stop(
         turn_id = state.get("turn_id")
         active = state.get("spooled_active")
         active = active if isinstance(active, dict) else None
-        active_external = state.get("external_turn_id") if turn_id else (
-            active.get("external_turn_id") if active else None
+        active_external = (
+            state.get("external_turn_id")
+            if turn_id
+            else (active.get("external_turn_id") if active else None)
         )
-        targets_active = bool((turn_id or active) and (
-            declared is None or declared == active_external
-        ))
-        pending = next((
-            item for item in _pending_commits(state)
-            if declared is not None and item.get("external_turn_id") == declared
-            and item.get("binding_id") == binding_id
-        ), None)
-        spooled = next((
-            item for item in _spooled_turns(state)
-            if declared is not None and item.get("external_turn_id") == declared
-            and item.get("session_external_id") == external_session
-            and item.get("binding_id") == binding_id
-        ), None)
+        targets_active = bool(
+            (turn_id or active) and (declared is None or declared == active_external)
+        )
+        pending = next(
+            (
+                item
+                for item in _pending_commits(state)
+                if declared is not None
+                and item.get("external_turn_id") == declared
+                and item.get("binding_id") == binding_id
+            ),
+            None,
+        )
+        spooled = next(
+            (
+                item
+                for item in _spooled_turns(state)
+                if declared is not None
+                and item.get("external_turn_id") == declared
+                and item.get("session_external_id") == external_session
+                and item.get("binding_id") == binding_id
+            ),
+            None,
+        )
         # A late event without an exact queued target never borrows B's active
         # internal id, observations, cursor or privacy.
-        if not targets_active and pending is None and spooled is None and declared is not None and active_external:
-            print("dDuo: unmatched Stop preserved the current turn; capture is unverified.", file=sys.stderr)
+        if (
+            not targets_active
+            and pending is None
+            and spooled is None
+            and declared is not None
+            and active_external
+        ):
+            print(
+                "dDuo: unmatched Stop preserved the current turn; capture is unverified.",
+                file=sys.stderr,
+            )
             return None
         if not targets_active and pending is None and spooled is None:
             return None
 
-        state.update({
-            "project_id": project_id, "client": client, "binding_id": binding_id,
-            "session_external_id": external_session,
-        })
-        response_field = next((
-            name for name in ("last_assistant_message", "assistant_response")
-            if isinstance(payload.get(name), str)
-        ), None)
+        state.update(
+            {
+                "project_id": project_id,
+                "client": client,
+                "binding_id": binding_id,
+                "session_external_id": external_session,
+            }
+        )
+        response_field = next(
+            (
+                name
+                for name in ("last_assistant_message", "assistant_response")
+                if isinstance(payload.get(name), str)
+            ),
+            None,
+        )
         # Native Stop has no trusted semantic-boundary field. Do not fabricate
         # topic_changed here; routine sleep uses the host threshold/idle policy.
         body = {"assistant_response": payload[response_field]} if response_field else {}
         native_turn = active_external if targets_active else declared
-        internal_turn = str(turn_id) if targets_active and turn_id else (
-            str(pending["turn_id"]) if pending else None
+        internal_turn = (
+            str(turn_id)
+            if targets_active and turn_id
+            else (str(pending["turn_id"]) if pending else None)
         )
         observations = []
         if targets_active:
             values = state.get("pending_context_observations")
-            observations = [
-                deepcopy(item) for item in values if isinstance(item, dict)
-                and item.get("turn_id") in {None, internal_turn}
-            ] if isinstance(values, list) else []
+            observations = (
+                [
+                    deepcopy(item)
+                    for item in values
+                    if isinstance(item, dict) and item.get("turn_id") in {None, internal_turn}
+                ]
+                if isinstance(values, list)
+                else []
+            )
             if observations:
                 body["context_observations"] = observations
         staged = None
         captured = False
         if internal_turn:
-            privacy = pending.get("off_record") if pending else state.get(
-                "turn_off_record", state.get("session_off_record")
+            privacy = (
+                pending.get("off_record")
+                if pending
+                else state.get("turn_off_record", state.get("session_off_record"))
             )
             staged = queue_pending_commit(
-                state, internal_turn, body, binding_id,
+                state,
+                internal_turn,
+                body,
+                binding_id,
                 external_turn_id=native_turn,
                 off_record=privacy if isinstance(privacy, bool) else True,
             )
@@ -3300,21 +3417,29 @@ def _stage_stop(
             item = deepcopy(source)
             item["binding_id"] = binding_id
             # Captured privacy belongs to the turn, not today's session.
-            item["off_record"] = item.get("off_record") if isinstance(item.get("off_record"), bool) else True
+            item["off_record"] = (
+                item.get("off_record") if isinstance(item.get("off_record"), bool) else True
+            )
             item, conflict = _merge_completion_snapshot(item, body, nested=False)
             if conflict:
                 _record_stop_conflict(state, external_turn_id=native_turn)
             queued = _spooled_turns(state)
-            index = next((
-                index for index, entry in enumerate(queued)
-                if entry.get("session_external_id") == external_session
-                and entry.get("external_turn_id") == native_turn
-                and entry.get("binding_id") == binding_id
-            ), None)
+            index = next(
+                (
+                    index
+                    for index, entry in enumerate(queued)
+                    if entry.get("session_external_id") == external_session
+                    and entry.get("external_turn_id") == native_turn
+                    and entry.get("binding_id") == binding_id
+                ),
+                None,
+            )
             if index is None:
                 queued.append(item)
             else:
-                queued[index], conflict = _merge_completion_snapshot(queued[index], item, nested=False)
+                queued[index], conflict = _merge_completion_snapshot(
+                    queued[index], item, nested=False
+                )
                 if conflict:
                     _record_stop_conflict(state, external_turn_id=native_turn)
             state["spooled_turns"] = queued
@@ -3324,8 +3449,10 @@ def _stage_stop(
             if isinstance(evidence, dict):
                 previous = evidence.get("stop")
                 previous = previous if isinstance(previous, dict) else {}
-                available = _commit_payload_has_response(staged.get("payload")) if staged else (
-                    _commit_payload_has_response(item)
+                available = (
+                    _commit_payload_has_response(staged.get("payload"))
+                    if staged
+                    else (_commit_payload_has_response(item))
                 )
                 evidence["version"] = 1
                 evidence["stop"] = {
@@ -3334,24 +3461,42 @@ def _stage_stop(
                     **({"turn_id": internal_turn} if internal_turn else {}),
                     "response_available": available,
                     "off_record": (staged if staged else item).get("off_record") is True,
-                    **({"queued_at": staged["queued_at"]} if staged and staged.get("queued_at") else {}),
-                    **({"conflict": True} if previous.get("conflict") and previous.get("external_turn_id") == native_turn else {}),
+                    **(
+                        {"queued_at": staged["queued_at"]}
+                        if staged and staged.get("queued_at")
+                        else {}
+                    ),
+                    **(
+                        {"conflict": True}
+                        if previous.get("conflict")
+                        and previous.get("external_turn_id") == native_turn
+                        else {}
+                    ),
                 }
             if response_field is None:
                 incomplete = state.get("incomplete_stops")
                 incomplete = incomplete if isinstance(incomplete, list) else []
-                if not any(isinstance(item, dict) and item.get("external_turn_id") == native_turn for item in incomplete):
-                    incomplete.append({
-                        "external_turn_id": native_turn,
-                        **({"turn_id": internal_turn} if internal_turn else {}),
-                        "observed_at": datetime.now().astimezone().isoformat(),
-                    })
+                if not any(
+                    isinstance(item, dict) and item.get("external_turn_id") == native_turn
+                    for item in incomplete
+                ):
+                    incomplete.append(
+                        {
+                            "external_turn_id": native_turn,
+                            **({"turn_id": internal_turn} if internal_turn else {}),
+                            "observed_at": datetime.now().astimezone().isoformat(),
+                        }
+                    )
                 state["incomplete_stops"] = incomplete[-20:]
         if targets_active:
             source = codex_telemetry_source(payload, dict(state), external_session=external_session)
             if source is not None:
                 sources = state.get("pending_codex_usage")
-                sources = [item for item in sources if isinstance(item, dict)] if isinstance(sources, list) else []
+                sources = (
+                    [item for item in sources if isinstance(item, dict)]
+                    if isinstance(sources, list)
+                    else []
+                )
                 if not any(item.get("source_id") == source["source_id"] for item in sources):
                     sources.append(source)
                 state["pending_codex_usage"] = sources
@@ -3360,7 +3505,8 @@ def _stage_stop(
             state.pop("turn_off_record", None)
             state.pop("spooled_active", None)
             remaining = [
-                item for item in state.get("pending_context_observations", [])
+                item
+                for item in state.get("pending_context_observations", [])
                 if item not in observations
             ]
             if remaining:
@@ -3369,7 +3515,11 @@ def _stage_stop(
                 state.pop("pending_context_observations", None)
         # If this fails, the caller must not start the network request.
         write_state(path, state)
-        return deepcopy(staged) if staged and _commit_payload_has_response(staged.get("payload")) else None
+        return (
+            deepcopy(staged)
+            if staged and _commit_payload_has_response(staged.get("payload"))
+            else None
+        )
 
 
 def stop() -> None:
@@ -3384,15 +3534,22 @@ def stop() -> None:
         binding = _binding_for_project(root, project)
         path, _ = load_bound_state(str(project["id"]), client, external, binding.binding_id)
         staged = _stage_stop(
-            path, payload, project_id=str(project["id"]), client=client,
-            external_session=external, binding_id=binding.binding_id,
+            path,
+            payload,
+            project_id=str(project["id"]),
+            client=client,
+            external_session=external,
+            binding_id=binding.binding_id,
         )
         transport = _project_client(binding, "hook", external)
         if staged is not None:
             try:
                 response = _request(
-                    transport, "POST", f"/turns/{staged['turn_id']}/stop-check",
-                    json=staged["payload"], timeout=_stop_timeout(),
+                    transport,
+                    "POST",
+                    f"/turns/{staged['turn_id']}/stop-check",
+                    json=staged["payload"],
+                    timeout=_stop_timeout(),
                 )
                 if _committed_stop_response(response):
                     _ack_pending_commit(path, staged)
@@ -3405,12 +3562,18 @@ def stop() -> None:
             state = read_state(path)
             before = deepcopy(state)
             _, blocked = drain_pending_codex_usage(
-                state, project_id=str(project["id"]), deadline=deadline, max_sources=1,
+                state,
+                project_id=str(project["id"]),
+                deadline=deadline,
+                max_sources=1,
             )
             flush_client_telemetry(transport, str(project["id"]), deadline=deadline)
             if blocked and time.monotonic() < deadline:
                 drain_pending_codex_usage(
-                    state, project_id=str(project["id"]), deadline=deadline, max_sources=1,
+                    state,
+                    project_id=str(project["id"]),
+                    deadline=deadline,
+                    max_sources=1,
                 )
             merge_state_update(path, before, state, lock_timeout=1)
         except Exception:

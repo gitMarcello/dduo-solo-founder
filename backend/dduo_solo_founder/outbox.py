@@ -61,6 +61,22 @@ class OutboxProcessor:
             await db.rollback()
             return False
         event.attempts += 1
+        if event.event_type == "personal.publish":
+            from .personal_memory import deliver
+
+            try:
+                await asyncio.to_thread(deliver, event.project_id, event.payload)
+                event.status = "processed"
+                event.processed_at = utcnow()
+                event.last_error = None
+            except Exception:
+                event.status = "failed"
+                event.last_error = "personal_delivery_unavailable"
+                event.next_attempt_at = utcnow() + timedelta(
+                    seconds=min(2 ** min(event.attempts, 8), 300)
+                )
+            await db.commit()
+            return True
         observed_result = None
         task_outcome: TaskIndexOutcome | None = None
         operation_error: Exception | None = None
@@ -95,10 +111,7 @@ class OutboxProcessor:
                     # Task row while OpenAI or Qdrant is slow. User mutations
                     # remain responsive and newer projection events wait.
                     await db.execute(
-                        text(
-                            "SELECT pg_advisory_xact_lock("
-                            "hashtextextended(:aggregate_id, 0))"
-                        ),
+                        text("SELECT pg_advisory_xact_lock(hashtextextended(:aggregate_id, 0))"),
                         {"aggregate_id": event.aggregate_id},
                     )
                 task = await db.scalar(

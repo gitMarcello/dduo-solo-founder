@@ -21,6 +21,7 @@ API_PRICING_VERSION = "api-list-prices-2026-08-29"
 SEPTEMBER_API_PRICING_VERSION = "api-list-prices-2026-09-05"
 LATE_SEPTEMBER_API_PRICING_VERSION = "api-list-prices-2026-09-22"
 OCTOBER_API_PRICING_VERSION = "api-list-prices-2026-10-23"
+NOVEMBER_API_PRICING_VERSION = "api-list-prices-2026-11-17"
 EMBEDDING_PRICING_VERSION = "openai-text-embedding-3-large-2026-08"
 EMBEDDING_PRICE_PER_MILLION = Decimal("0.13")
 
@@ -37,6 +38,7 @@ class ModelPrice:
     output_usd_per_million: Decimal
     context_window_tokens: int
     max_output_tokens: int | None = None
+    max_input_tokens: int | None = None
     long_context_threshold_input_tokens: int | None = None
     long_context_input_multiplier: Decimal = Decimal(1)
     long_context_output_multiplier: Decimal = Decimal(1)
@@ -85,6 +87,7 @@ def _price(
     output_rate: str,
     context_window_tokens: int,
     max_output_tokens: int | None = None,
+    max_input_tokens: int | None = None,
     long_context_threshold_input_tokens: int | None = None,
     long_context_input_multiplier: str = "1",
     long_context_output_multiplier: str = "1",
@@ -99,6 +102,7 @@ def _price(
         output_usd_per_million=Decimal(output_rate),
         context_window_tokens=context_window_tokens,
         max_output_tokens=max_output_tokens,
+        max_input_tokens=max_input_tokens,
         long_context_threshold_input_tokens=long_context_threshold_input_tokens,
         long_context_input_multiplier=Decimal(long_context_input_multiplier),
         long_context_output_multiplier=Decimal(long_context_output_multiplier),
@@ -137,6 +141,57 @@ _OPENAI_SOL_61 = _price(
     long_context_input_multiplier="2",
     long_context_output_multiplier="1.5",
     pricing_version=OCTOBER_API_PRICING_VERSION,
+)
+# Verified 2026-11-17 against the exact model pages and Standard pricing:
+# https://developers.openai.com/api/docs/models/gpt-6.2-astra
+# https://developers.openai.com/api/docs/models/gpt-6.2-sol
+# https://developers.openai.com/api/docs/models/gpt-6.1-terra
+# https://developers.openai.com/api/docs/pricing
+# Cache writes use 30-minute retention; other processing tiers are not inferred.
+_OPENAI_ASTRA_62 = _price(
+    "openai",
+    "gpt-6.2-astra",
+    input_rate="8",
+    cached_rate="0.40",
+    cache_write_rate="10",
+    output_rate="40",
+    context_window_tokens=1_050_000,
+    max_input_tokens=922_000,
+    max_output_tokens=128_000,
+    long_context_threshold_input_tokens=272_000,
+    long_context_input_multiplier="2",
+    long_context_output_multiplier="1.5",
+    pricing_version=NOVEMBER_API_PRICING_VERSION,
+)
+_OPENAI_SOL_62 = _price(
+    "openai",
+    "gpt-6.2-sol",
+    input_rate="2",
+    cached_rate="0.10",
+    cache_write_rate="2.50",
+    output_rate="10",
+    context_window_tokens=1_050_000,
+    max_input_tokens=922_000,
+    max_output_tokens=128_000,
+    long_context_threshold_input_tokens=272_000,
+    long_context_input_multiplier="2",
+    long_context_output_multiplier="1.5",
+    pricing_version=NOVEMBER_API_PRICING_VERSION,
+)
+_OPENAI_TERRA_61 = _price(
+    "openai",
+    "gpt-6.1-terra",
+    input_rate="1",
+    cached_rate="0.05",
+    cache_write_rate="1.25",
+    output_rate="5",
+    context_window_tokens=1_050_000,
+    max_input_tokens=922_000,
+    max_output_tokens=128_000,
+    long_context_threshold_input_tokens=272_000,
+    long_context_input_multiplier="2",
+    long_context_output_multiplier="1.5",
+    pricing_version=NOVEMBER_API_PRICING_VERSION,
 )
 # https://developers.openai.com/api/docs/models/gpt-6-sol
 # https://developers.openai.com/api/docs/models/gpt-6-luna
@@ -353,6 +408,9 @@ MODEL_PRICES: Mapping[tuple[Provider, str], ModelPrice] = MappingProxyType(
     {
         ("openai", "gpt-6-astra"): _OPENAI_ASTRA,
         ("openai", "gpt-6.1-sol"): _OPENAI_SOL_61,
+        ("openai", "gpt-6.2-astra"): _OPENAI_ASTRA_62,
+        ("openai", "gpt-6.2-sol"): _OPENAI_SOL_62,
+        ("openai", "gpt-6.1-terra"): _OPENAI_TERRA_61,
         ("openai", "gpt-6-sol"): _OPENAI_SOL_6,
         ("openai", "gpt-6-luna"): _OPENAI_LUNA_6,
         ("openai", "gpt-5.6"): _OPENAI_SOL,
@@ -475,6 +533,8 @@ def api_equivalent_cost(
             return None
         base_input_count = input_count
         prompt_tokens = input_count + cached_count + cache_write_count
+    if price.max_input_tokens is not None and prompt_tokens > price.max_input_tokens:
+        return None
     if price.max_output_tokens is not None and output_count > price.max_output_tokens:
         return None
     if prompt_tokens + output_count > price.context_window_tokens:

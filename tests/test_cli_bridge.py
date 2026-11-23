@@ -949,6 +949,33 @@ def test_runner_classifies_plain_text_expired_login_and_usage_limit():
     assert limited.kind == "rate_limited" and limited.retry_after_seconds == 1800
 
 
+@pytest.mark.parametrize("message,code", [
+    ("Your access token could not be refreshed because your refresh token was already used. "
+     "Please log out and sign in again.", ""),
+    ("Provided authentication token is expired. Please try signing in again.", "token_expired"),
+    ("", "refresh_token_reused"),
+])
+def test_codex_expired_login_in_jsonl_requires_reconnection(message, code):
+    output = "\n".join(json.dumps(event) for event in [
+        {"type": "thread.started", "thread_id": "test-thread"},
+        {"type": "turn.failed", "error": {"message": message, "code": code}},
+    ])
+    error = cli_bridge.classify_cli_failure("codex", output, "")
+    assert error.kind == "auth_required"
+    assert "connected again" in str(error)
+
+
+def test_optional_mcp_expired_login_does_not_hide_model_transport_failure():
+    output = json.dumps({
+        "type": "turn.failed", "error": {"message": "connection closed before response"},
+    })
+    error = cli_bridge.classify_cli_failure(
+        "codex", output,
+        "Optional MCP server: Provided authentication token is expired. token_expired",
+    )
+    assert error.kind == "bridge_unavailable"
+
+
 def test_runner_classifies_invalid_codex_schema_before_any_limit_marker():
     error = cli_bridge.classify_cli_failure(
         "codex",
@@ -1794,8 +1821,9 @@ def test_setup_http_routes_keep_secrets_inside_the_local_page(monkeypatch, tmp_p
         def save_openai_key(self, key, project_root=None):
             calls.append(("key", key, project_root))
 
-        def start_auth(self, provider, project_root=None):
+        def start_auth(self, provider, project_root=None, *, force=False):
             calls.append(("auth", provider, project_root))
+            calls.append(("force_auth", force))
             return {"status": "waiting", "provider": provider}
 
         def start_docker(self):
@@ -1855,6 +1883,13 @@ def test_setup_http_routes_keep_secrets_inside_the_local_page(monkeypatch, tmp_p
         202,
         {"status": "waiting", "provider": "claude"},
     )
+    assert calls[-1] == ("force_auth", False)
+    assert post("/v1/setup/auth", {"provider": "codex", "force": True}) == (
+        202, {"status": "waiting", "provider": "codex"},
+    )
+    assert calls[-1] == ("force_auth", True)
+    assert post("/v1/setup/auth", {"provider": "codex", "force": "true"})[0] == 202
+    assert calls[-1] == ("force_auth", False)
     assert post("/v1/setup/docker", {}) == (202, {"status": "starting"})
     assert post("/v1/setup/backup", {}) == (
         200,
@@ -2376,6 +2411,32 @@ def test_start_auth_invalidates_every_qualified_readiness_cache_entry(monkeypatc
     assert setup.start_auth("codex") == {"status": "waiting", "provider": "codex"}
     assert all(not key.startswith("codex:host:") for key in setup._auth_status)
     assert "claude:host:/managed/claude::/managed/config:cli" in setup._auth_status
+
+
+def test_explicit_reconnect_starts_official_login_despite_saved_project_login(monkeypatch, tmp_path):
+    root = tmp_path / "Project"
+    config = root / ".dduo-solo-founder"
+    config.mkdir(parents=True)
+    (config / "project.toml").write_text('id = "p1"\nbinding = "local"\n')
+    setup = cli_bridge.SetupService()
+    monkeypatch.setattr(setup, "_subscription_status", lambda *_args, **_kwargs: SimpleNamespace(ready=True))
+    monkeypatch.setattr(setup, "_memory_status", lambda *_args: {"state": "waiting"})
+    calls = []
+    monkeypatch.setattr(
+        cli_bridge.subprocess, "Popen",
+        lambda command, **kwargs: calls.append((command, kwargs)) or SimpleNamespace(poll=lambda: None),
+    )
+
+    assert setup.start_auth("codex", str(root)) == {"status": "connected", "provider": "codex"}
+    assert not calls
+    assert setup.start_auth("codex", str(root), force=True) == {"status": "waiting", "provider": "codex"}
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command[-1] == "login"
+    assert options["env"]["CODEX_HOME"] == str(project_secrets.project_codex_home("p1"))
+    # Polling or repeated clicks cannot launch concurrent logins.
+    assert setup.start_auth("codex", str(root), force=True)["status"] == "waiting"
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])

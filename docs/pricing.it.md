@@ -6,16 +6,20 @@ L'osservabilità separa embedding a pagamento, uso interattivo e sleep.
 Le stime API equivalenti dell'uso in abbonamento non sono fatture o contatori
 di quota e non vanno sommate agli embedding come addebiti reali.
 
-Il catalogo è stato confrontato con i prezzi ufficiali OpenAI e Anthropic il
-**23 ottobre 2026**. GPT-6.1 Sol e Claude Opus, Sonnet e Haiku 5.5 usano un nuovo
-snapshot con questa data. Le tariffe già presenti corrispondono ancora ai
-listini ufficiali e conservano gli snapshot originari: **22 settembre 2026**
-per GPT-6 Sol e Luna, **5 settembre 2026** per Astra e Fable 5.1 e
-**29 agosto 2026** per i modelli precedenti. Le seguenti tariffe API standard
+GPT-6.2 Astra, GPT-6.2 Sol e GPT-6.1 Terra sono stati verificati sulle rispettive
+pagine ufficiali OpenAI e sul listino il **17 novembre 2026** e usano un nuovo
+snapshot con questa data. Le voci esistenti conservano gli snapshot precedenti:
+**23 ottobre 2026** per GPT-6.1 Sol e Claude Opus, Sonnet e Haiku 5.5,
+**22 settembre 2026** per GPT-6 Sol e Luna, **5 settembre 2026** per GPT-6 Astra
+e Fable 5.1 e **29 agosto 2026** per i modelli precedenti. L'aggiunta delle nuove
+voci non riscrive i costi salvati. Le seguenti tariffe API standard
 sono espresse in USD per milione di token:
 
 | Modello | Input non in cache | Lettura cache | Scrittura cache | Output |
 | --- | ---: | ---: | ---: | ---: |
+| GPT-6.2 Astra | 8 | 0,40 | 10 | 40 |
+| GPT-6.2 Sol | 2 | 0,10 | 2,50 | 10 |
+| GPT-6.1 Terra | 1 | 0,05 | 1,25 | 5 |
 | GPT-6 Astra | 10 | 1 | 12,50 | 50 |
 | GPT-6.1 Sol | 2 | 0,10 | 2,50 | 10 |
 | GPT-6 Sol | 2 | 0,20 | 2,50 | 10 |
@@ -26,6 +30,9 @@ sono espresse in USD per milione di token:
 | Claude Haiku 5.5, fino a 100K token nel prompt | 0,10 | 0,01 | 0,125 (5 minuti), 0,20 (1 ora) | 0,50 |
 
 Le fonti di riferimento dello snapshot sono
+[documentazione GPT-6.2 Astra OpenAI](https://developers.openai.com/api/docs/models/gpt-6.2-astra),
+[documentazione GPT-6.2 Sol OpenAI](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[documentazione GPT-6.1 Terra OpenAI](https://developers.openai.com/api/docs/models/gpt-6.1-terra),
 [documentazione Astra OpenAI](https://developers.openai.com/api/docs/models/gpt-6-astra),
 [documentazione GPT-6.1 Sol OpenAI](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
 [documentazione Sol OpenAI](https://developers.openai.com/api/docs/models/gpt-6-sol),
@@ -35,11 +42,12 @@ Le fonti di riferimento dello snapshot sono
 Sono tariffe versionate usate dalla release, non un listino aggiornato in tempo
 reale.
 
-Per richieste Astra, Sol e Luna oltre **272.000 token di input**, la regola
+Per richieste Astra, Sol, Terra e Luna oltre **272.000 token di input**, la regola
 conservata raddoppia le tariffe dei componenti input e moltiplica quelle output
 per 1,5. Non applicare invariata la tabella del contesto breve a queste richieste.
-GPT-6.1 Sol legge la cache al 5% del prezzo input base; GPT-6 Sol conserva la
-tariffa distinta del 10%. Le scritture cache OpenAI in tabella usano la tariffa
+Le nuove voci di novembre e GPT-6.1 Sol leggono la cache al 5% del prezzo input
+base; GPT-6 Sol e GPT-6 Astra conservano la tariffa distinta del 10%.
+Le scritture cache OpenAI in tabella usano la tariffa
 standard a 30 minuti. Il confronto usa prezzi Standard, senza maggiorazioni
 Fast/Ultrafast, sconti Batch o Flex o supplementi regionali.
 
@@ -50,7 +58,10 @@ cache, escludendo l'output. Ogni richiesta viene valutata separatamente, anche
 quando un turno contiene più richieste. Claude Opus e Sonnet 5.5 mantengono le
 tariffe standard nell'intera finestra di contesto da 1M token.
 
-GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna e i modelli Claude 5.5 hanno un massimo di
+Le voci di novembre verificano un massimo di **922.000 token input** e
+**128.000 token output**, entro una finestra di contesto da 1.050.000 token.
+Quantità oltre i due limiti restano senza prezzo, compreso l'input in cache.
+Anche GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna e i modelli Claude 5.5 hanno un massimo di
 128.000 token output per richiesta: quantità maggiori restano senza prezzo.
 Fable 5.1 legge la cache a 0,025 volte il prezzo input base; la vecchia voce
 Fable 5 resta distinta. Le scritture cache richiedono una durata attribuibile

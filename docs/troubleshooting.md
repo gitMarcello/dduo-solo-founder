@@ -2,7 +2,7 @@
 
 # Troubleshooting
 
-Troubleshooting for dDuo Solo Founder `0.2.0-beta.5`.
+Troubleshooting for dDuo Solo Founder `0.2.0-beta.6`.
 
 Normal use should require no technical diagnosis. dDuo keeps project work
 available when its configured local or remote memory is temporarily unavailable.
@@ -179,7 +179,14 @@ to reconnect, and explicitly offers continuing temporarily as the alternative.
 Existing memories and captured turns are retained; a paused sleep
 does not by itself mean that capture or retrieval has stopped.
 
-After choosing to fix it, select **Connect** in Setup and complete official
+**Saved login** in Setup means that the CLI found stored subscription credentials;
+it does not prove that they can still execute a consolidation. **Reconnect**
+remains available for an explicit new sign-in. Expired or reused Codex refresh
+credentials reported by the failed model turn require reconnection rather than
+automatic technical retries. Authentication failures from optional MCP servers
+are kept separate from that model-turn failure.
+
+After choosing to fix it, select **Connect** or **Reconnect** in Setup and complete official
 sign-in for Codex or Claude in that project's private host state. One completed,
 verified subscription permits resuming sleep jobs; opening Setup alone never resumes them. Failed
 resume requests offer an explicit retry. Scheduled means queued, not recovered:
